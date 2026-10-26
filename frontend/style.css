@@ -609,17 +609,27 @@ body {
   display: block;
 }
 
-/* Consensus Clinical Assessment Panel */
-.consensus-card {
+/* Patient-Friendly Scan Assessment Panel */
+.assessment-panel-card {
   border-left: 5px solid var(--primary);
   margin-bottom: 24px;
-  background: linear-gradient(135deg, rgba(6, 182, 212, 0.08) 0%, rgba(14, 22, 41, 0.85) 100%);
+  background: linear-gradient(135deg, rgba(6, 182, 212, 0.08) 0%, rgba(14, 22, 41, 0.95) 100%);
+  border-radius: var(--radius-lg);
+  box-shadow: 0 12px 30px rgba(0, 0, 0, 0.35);
+  transition: all var(--transition-normal);
 }
 
-.consensus-header {
+.assessment-header {
   display: flex;
   justify-content: space-between;
   align-items: flex-start;
+  gap: 16px;
+  margin-bottom: 16px;
+  flex-wrap: wrap;
+}
+
+.assessment-header-left {
+  flex: 1;
 }
 
 .eyebrow-tag {
@@ -631,10 +641,32 @@ body {
   margin-bottom: 4px;
 }
 
-.consensus-header h2 {
+.assessment-title {
   font-family: var(--font-heading);
-  font-size: 1.6rem;
+  font-size: 1.65rem;
   font-weight: 700;
+  margin-bottom: 6px;
+  letter-spacing: -0.02em;
+}
+
+.consensus-models-agreement {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 0.82rem;
+  color: var(--text-secondary);
+  background: rgba(255, 255, 255, 0.04);
+  padding: 4px 10px;
+  border-radius: var(--radius-full);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.consensus-models-agreement i {
+  color: var(--accent-success);
+}
+
+.dot-separator {
+  opacity: 0.4;
 }
 
 .consensus-badge {
@@ -647,10 +679,202 @@ body {
   color: #fb7185;
 }
 
-.consensus-desc {
+/* Plain English Patient Explanation Box */
+.plain-english-box {
+  background: rgba(6, 182, 212, 0.05);
+  border: 1px solid rgba(6, 182, 212, 0.2);
+  border-radius: var(--radius-md);
+  padding: 14px 18px;
+  margin-bottom: 20px;
+}
+
+.plain-english-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 0.76rem;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  color: var(--primary);
+  margin-bottom: 6px;
+  text-transform: uppercase;
+}
+
+.plain-english-header i {
+  font-size: 0.9rem;
+  color: #fbbf24;
+}
+
+.plain-english-text {
+  color: #e2e8f0;
+  font-size: 0.95rem;
+  line-height: 1.55;
+  margin: 0;
+}
+
+/* 4-Category Patient Guide Grid */
+.classes-guide-section {
+  margin-top: 14px;
+  padding-top: 14px;
+  border-top: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.guide-header-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 12px;
+}
+
+.guide-subtitle {
+  font-size: 0.85rem;
+  font-weight: 600;
+  color: var(--text-secondary);
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.classes-guide-grid {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 12px;
+}
+
+@media (max-width: 768px) {
+  .classes-guide-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+.guide-card {
+  background: rgba(15, 23, 42, 0.6);
+  border: 1px solid rgba(255, 255, 255, 0.07);
+  border-radius: var(--radius-md);
+  padding: 14px;
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  gap: 8px;
+  transition: all var(--transition-normal);
+  position: relative;
+  overflow: hidden;
+}
+
+.guide-card:hover {
+  transform: translateY(-2px);
+  border-color: rgba(255, 255, 255, 0.15);
+}
+
+/* Highlighted / Selected Detected Card */
+.guide-card.detected-card {
+  background: linear-gradient(145deg, rgba(16, 185, 129, 0.12) 0%, rgba(15, 23, 42, 0.9) 100%);
+  border: 1.5px solid var(--accent-success);
+  box-shadow: 0 0 25px rgba(16, 185, 129, 0.25), inset 0 0 15px rgba(16, 185, 129, 0.08);
+}
+
+.guide-card.detected-card.severity-high {
+  background: linear-gradient(145deg, rgba(244, 63, 94, 0.14) 0%, rgba(15, 23, 42, 0.9) 100%);
+  border-color: #f43f5e;
+  box-shadow: 0 0 25px rgba(244, 63, 94, 0.25), inset 0 0 15px rgba(244, 63, 94, 0.08);
+}
+
+.guide-card.detected-card.severity-moderate {
+  background: linear-gradient(145deg, rgba(245, 158, 11, 0.14) 0%, rgba(15, 23, 42, 0.9) 100%);
+  border-color: #f59e0b;
+  box-shadow: 0 0 25px rgba(245, 158, 11, 0.25), inset 0 0 15px rgba(245, 158, 11, 0.08);
+}
+
+.guide-card-top {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 8px;
+}
+
+.guide-card-title-group {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.guide-card-icon {
+  width: 28px;
+  height: 28px;
+  border-radius: var(--radius-sm);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 0.85rem;
+}
+
+.guide-card-name {
+  font-family: var(--font-heading);
+  font-weight: 700;
+  font-size: 0.96rem;
+  color: #fff;
+}
+
+.detected-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 0.7rem;
+  font-weight: 800;
+  padding: 3px 8px;
+  border-radius: var(--radius-full);
+  background: rgba(16, 185, 129, 0.2);
+  color: #34d399;
+  border: 1px solid rgba(16, 185, 129, 0.5);
+  animation: pulse-badge 2s infinite ease-in-out;
+}
+
+@keyframes pulse-badge {
+  0%, 100% { transform: scale(1); opacity: 1; }
+  50% { transform: scale(1.04); opacity: 0.88; }
+}
+
+.ruled-out-badge {
+  font-size: 0.7rem;
+  font-weight: 600;
   color: var(--text-muted);
-  font-size: 0.92rem;
-  margin-top: 10px;
+  background: rgba(255, 255, 255, 0.04);
+  padding: 3px 8px;
+  border-radius: var(--radius-full);
+  border: 1px solid rgba(255, 255, 255, 0.06);
+}
+
+.guide-card-summary {
+  font-size: 0.85rem;
+  color: #cbd5e1;
+  line-height: 1.45;
+  margin-top: 4px;
+}
+
+.guide-card-details {
+  font-size: 0.78rem;
+  color: var(--text-secondary);
+  line-height: 1.4;
+  background: rgba(0, 0, 0, 0.2);
+  padding: 6px 10px;
+  border-radius: var(--radius-sm);
+  margin-top: 4px;
+}
+
+.guide-card-footer {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  font-size: 0.75rem;
+  color: var(--text-muted);
+  padding-top: 6px;
+  border-top: 1px solid rgba(255, 255, 255, 0.04);
+  margin-top: 4px;
+}
+
+.guide-confidence-pill {
+  font-weight: 700;
+  font-size: 0.82rem;
 }
 
 /* Grad-CAM Viewer */

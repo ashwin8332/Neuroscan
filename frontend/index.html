@@ -157,16 +157,43 @@
         <!-- Right Column: Diagnostic Results & Explainability -->
         <div class="diagnostic-results">
           
-          <!-- Consensus Banner -->
-          <div class="card glass-card consensus-card" id="consensus-panel" style="display: none;">
-            <div class="consensus-header">
-              <div>
-                <span class="eyebrow-tag">CONSENSUS CLINICAL ASSESSMENT</span>
-                <h2 id="consensus-title">Glioma Detected</h2>
+          <!-- Patient-Friendly Scan Assessment & Multi-Model Consensus -->
+          <div class="card glass-card assessment-panel-card" id="consensus-panel" style="display: none;">
+            <!-- Top Assessment Header -->
+            <div class="assessment-header">
+              <div class="assessment-header-left">
+                <span class="eyebrow-tag"><i class="fa-solid fa-notes-medical"></i> DIAGNOSTIC SCAN ASSESSMENT</span>
+                <h2 id="consensus-title" class="assessment-title">Normal / Healthy Brain Scan</h2>
+                <div class="consensus-models-agreement" id="consensus-models-agreement">
+                  <i class="fa-solid fa-circle-check"></i>
+                  <span id="consensus-agreement-text">4 of 4 AI Models Agree</span>
+                  <span class="dot-separator">&bull;</span>
+                  <span id="consensus-avg-conf">98.34% Avg Confidence</span>
+                </div>
               </div>
-              <div class="consensus-badge" id="consensus-severity-badge">High Severity</div>
+              <div class="consensus-badge" id="consensus-severity-badge">Normal / Clear</div>
             </div>
-            <p id="consensus-description" class="consensus-desc">Awaiting MRI scan analysis...</p>
+
+            <!-- Plain English Explanation Box -->
+            <div class="plain-english-box">
+              <div class="plain-english-header">
+                <i class="fa-solid fa-lightbulb"></i>
+                <span>WHAT THIS MEANS (PLAIN ENGLISH)</span>
+              </div>
+              <p id="consensus-description" class="plain-english-text">
+                All 4 neural network models examined this scan and confirmed healthy brain anatomy with no abnormal masses or tumor signals.
+              </p>
+            </div>
+
+            <!-- 4-Category Patient Guide (Details for each tumor type + Highlighted Detected Row) -->
+            <div class="classes-guide-section">
+              <div class="guide-header-row">
+                <span class="guide-subtitle"><i class="fa-solid fa-book-medical"></i> Brain Categories Reference &mdash; Detected Condition Highlighted:</span>
+              </div>
+              <div class="classes-guide-grid" id="classes-guide-grid">
+                <!-- Injected dynamically by app.js with details for glioma, meningioma, notumor, pituitary -->
+              </div>
+            </div>
           </div>
 
           <!-- Grad-CAM Visual Explainability Card -->

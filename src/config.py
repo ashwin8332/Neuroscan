@@ -32,27 +32,43 @@ CLASS_NAMES = ["glioma", "meningioma", "notumor", "pituitary"]
 CLASS_TO_IDX = {cls_name: i for i, cls_name in enumerate(CLASS_NAMES)}
 IDX_TO_CLASS = {i: cls_name for i, cls_name in enumerate(CLASS_NAMES)}
 
-# Class display colors & descriptions for UI/Visualizations
+# Class display colors & plain-English patient descriptions for UI/Visualizations
 CLASS_METADATA = {
     "glioma": {
-        "color": "#e63946",
-        "description": "Glioma: Tumor originating in the glial cells of the brain or spine.",
-        "severity": "High",
+        "display_name": "Glioma Tumor",
+        "color": "#f43f5e",
+        "icon": "fa-brain",
+        "severity": "High Severity",
+        "simple_summary": "A tumor that occurs in the brain and spinal cord, starting in supportive glial cells.",
+        "plain_details": "Glial cells surround and nourish neurons. Gliomas can grow into surrounding brain tissue, requiring specialist evaluation.",
+        "what_it_means": "The AI detected patterns typical of glial tissue growth. A neurologist or neurosurgeon typically reviews these findings for targeted treatment planning.",
     },
     "meningioma": {
-        "color": "#f4a261",
-        "description": "Meningioma: Tumor arising from the meninges surrounding the brain and spinal cord.",
-        "severity": "Moderate",
+        "display_name": "Meningioma Tumor",
+        "color": "#f59e0b",
+        "icon": "fa-shield-halved",
+        "severity": "Moderate Severity",
+        "simple_summary": "Tumors that arise from the meninges (the protective layers/membranes covering the brain).",
+        "plain_details": "The meninges are protective outer membranes shielding the brain and spinal cord. Meningiomas are usually non-cancerous (benign) and grow slowly from the outside inward.",
+        "what_it_means": "The AI found an outer-membrane mass. Doctors often monitor them with regular imaging or treat them if they compress surrounding brain structures.",
     },
     "notumor": {
-        "color": "#2a9d8f",
-        "description": "No Tumor: Normal healthy brain tissue scan without detectable neoplasms.",
-        "severity": "Normal",
+        "display_name": "Normal / Healthy Brain",
+        "color": "#10b981",
+        "icon": "fa-circle-check",
+        "severity": "Normal / Clear",
+        "simple_summary": "A normal, healthy brain scan with no evidence of tumor or abnormal tissue growth.",
+        "plain_details": "Brain tissues, ventricles, and hemispheres appear symmetrical and clear, with no signs of swelling, abnormal growths, or lesions.",
+        "what_it_means": "All neural networks found normal, healthy brain anatomy with no detectable tumor signals on this scan.",
     },
     "pituitary": {
-        "color": "#457b9d",
-        "description": "Pituitary Tumor: Abnormal growth in the pituitary gland at the base of the brain.",
-        "severity": "Moderate",
+        "display_name": "Pituitary Tumor",
+        "color": "#3b82f6",
+        "icon": "fa-dna",
+        "severity": "Moderate Severity",
+        "simple_summary": "Tumors located in the pituitary gland (the master hormone gland at the base of the brain).",
+        "plain_details": "The pituitary gland produces hormones regulating growth, blood pressure, and metabolism. Most pituitary tumors are benign adenomas that may affect hormone levels or vision.",
+        "what_it_means": "The AI detected a growth in the pituitary region. Healthcare providers typically evaluate hormone levels and eyesight.",
     },
 }
 

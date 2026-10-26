@@ -255,34 +255,87 @@ document.addEventListener("DOMContentLoaded", () => {
   function renderInferenceResults(data) {
     if (!data.success) return;
 
-    // 1. Render Consensus Clinical Panel
+    // 1. Render Patient-Friendly Scan Assessment Panel
     const consensusPanel = document.getElementById("consensus-panel");
     const consensusTitle = document.getElementById("consensus-title");
     const consensusBadge = document.getElementById("consensus-severity-badge");
     const consensusDesc = document.getElementById("consensus-description");
+    const agreementText = document.getElementById("consensus-agreement-text");
+    const avgConf = document.getElementById("consensus-avg-conf");
+    const guideGrid = document.getElementById("classes-guide-grid");
 
     const topClass = data.consensus_prediction;
     const topConf = data.consensus_confidence;
+    const displayName = data.consensus_display_name || topClass.toUpperCase();
 
-    consensusTitle.textContent = `${topClass.toUpperCase()} (${topConf}%)`;
-    consensusTitle.style.color = CLASS_COLORS[topClass] || "#fff";
+    consensusTitle.textContent = displayName;
+    consensusTitle.style.color = CLASS_COLORS[topClass] || "#10b981";
+
+    if (agreementText) {
+      agreementText.textContent = data.agreement_text || `${data.agreement_count || 4} of 4 AI Models Agree`;
+    }
+    if (avgConf) {
+      avgConf.textContent = `${topConf}% Consensus Confidence`;
+    }
 
     if (topClass === "notumor") {
       consensusBadge.textContent = "Normal / Clear";
       consensusBadge.className = "consensus-badge badge-emerald";
-      consensusDesc.textContent = "No detectable malignant neoplasms, mass lesions, or midline displacement identified on scan.";
     } else if (topClass === "glioma") {
       consensusBadge.textContent = "High Severity";
       consensusBadge.className = "consensus-badge badge-rose";
-      consensusDesc.textContent = "Infiltrative lesion characteristics identified. Glial origin suspected with surrounding hyperintensity. Recommend immediate neurosurgical consult.";
     } else if (topClass === "meningioma") {
       consensusBadge.textContent = "Moderate Severity";
       consensusBadge.className = "consensus-badge badge-amber";
-      consensusDesc.textContent = "Extra-axial, well-demarcated neoplasm consistent with meningeal origin. Follow-up volumetric measurement advised.";
     } else {
       consensusBadge.textContent = "Moderate Severity";
       consensusBadge.className = "consensus-badge badge-blue";
-      consensusDesc.textContent = "Sellar / suprasellar lesion detected. Recommend endocrine panel and visual field assessment.";
+    }
+
+    // Set plain-English summary description
+    consensusDesc.textContent = data.plain_summary || "Multi-model evaluation completed successfully.";
+
+    // Render 4-Category Patient Reference Guide Cards
+    if (guideGrid && data.categories_guide) {
+      guideGrid.innerHTML = "";
+      data.categories_guide.forEach((cat) => {
+        const card = document.createElement("div");
+        const isDet = cat.is_detected;
+        const severityClass = cat.severity.includes("High") ? "severity-high" : (cat.severity.includes("Moderate") ? "severity-moderate" : "");
+        card.className = `guide-card ${isDet ? 'detected-card ' + severityClass : 'ruled-out-card'}`;
+        card.style.borderLeft = `4px solid ${cat.color}`;
+
+        const statusBadge = isDet
+          ? `<span class="detected-badge"><i class="fa-solid fa-bullseye"></i> IDENTIFIED MATCH (${cat.average_confidence_pct}%)</span>`
+          : `<span class="ruled-out-badge"><i class="fa-solid fa-circle-minus"></i> Not Detected (${cat.average_confidence_pct}%)</span>`;
+
+        card.innerHTML = `
+          <div>
+            <div class="guide-card-top">
+              <div class="guide-card-title-group">
+                <div class="guide-card-icon" style="background: ${cat.color}22; color: ${cat.color};">
+                  <i class="fa-solid ${cat.icon || 'fa-brain'}"></i>
+                </div>
+                <div>
+                  <div class="guide-card-name">${cat.display_name}</div>
+                </div>
+              </div>
+              ${statusBadge}
+            </div>
+
+            <p class="guide-card-summary"><strong>Overview:</strong> ${cat.simple_summary}</p>
+            <div class="guide-card-details">
+              <strong>Location & Details:</strong> ${cat.plain_details}
+            </div>
+          </div>
+
+          <div class="guide-card-footer">
+            <span>Model Consensus: <strong>${cat.model_votes} of ${cat.total_models || 4} Models</strong></span>
+            <span class="guide-confidence-pill" style="color: ${cat.color};">Avg: ${cat.average_confidence_pct}%</span>
+          </div>
+        `;
+        guideGrid.appendChild(card);
+      });
     }
 
     consensusPanel.style.display = "block";

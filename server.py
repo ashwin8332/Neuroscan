@@ -232,6 +232,9 @@ async def predict_mri(
         pil_image = Image.open(io.BytesIO(content)).convert("RGB")
     elif sample_id:
         sample_path = TEST_DIR / sample_id
+        if not sample_path.exists():
+            sample_scans_dir = Path(__file__).resolve().parent / "sample_scans"
+            sample_path = sample_scans_dir / sample_id
         if sample_path.exists():
             pil_image = Image.open(sample_path).convert("RGB")
 
@@ -268,7 +271,7 @@ async def predict_mri(
                 "error_margin_pct": round((1.0 - conf) * 100.0, 2),
                 "color": meta.get("color", "#4f46e5"),
                 "severity": meta.get("severity", "Unknown"),
-                "description": meta.get("description", ""),
+                "description": meta.get("simple_summary", ""),
                 "confidences": {cls_k: round(v * 100.0, 2) for cls_k, v in res["confidences"].items()},
                 "is_checkpoint_loaded": is_trained,
             }
@@ -286,14 +289,69 @@ async def predict_mri(
             except Exception as e:
                 print(f"GradCAM exception: {e}")
 
-    # Determine consensus / best model prediction
-    # If ViT is loaded, use it; otherwise use highest confidence
-    top_pred = max(model_predictions, key=lambda x: x["confidence_pct"]) if model_predictions else None
+    # 3. Multi-Model Ensemble Consensus & Plain-English Patient Analysis
+    votes = {}
+    class_prob_sums = {cls_name: 0.0 for cls_name in CLASS_NAMES}
+    for m in model_predictions:
+        p_cls = m["predicted_class"]
+        votes[p_cls] = votes.get(p_cls, 0) + 1
+        for cls_k, prob in m["confidences"].items():
+            class_prob_sums[cls_k] += prob
+
+    total_models = len(model_predictions)
+    avg_confidences = {
+        cls_k: round(prob_sum / max(1, total_models), 2)
+        for cls_k, prob_sum in class_prob_sums.items()
+    }
+
+    # Best consensus class based on average ensemble probability
+    consensus_class = max(avg_confidences, key=avg_confidences.get) if avg_confidences else "notumor"
+    consensus_confidence = avg_confidences.get(consensus_class, 0.0)
+    agreement_count = votes.get(consensus_class, 0)
+    consensus_meta = CLASS_METADATA.get(consensus_class, {})
+
+    if consensus_class == "notumor":
+        plain_summary = (
+            f"All {agreement_count} of {total_models} AI models analyzed this MRI and found normal, healthy brain tissue. "
+            "There are no detectable tumors, abnormal fluid swelling, or lesions identified."
+        )
+    else:
+        plain_summary = (
+            f"{agreement_count} of {total_models} AI models identified characteristics consistent with a {consensus_meta.get('display_name', consensus_class)}. "
+            f"{consensus_meta.get('simple_summary', '')} {consensus_meta.get('what_it_means', '')}"
+        )
+
+    # 4. Non-Doctor Plain-English Breakdown for all 4 Brain Tumor Categories
+    categories_guide = []
+    for cls_name in CLASS_NAMES:
+        meta = CLASS_METADATA.get(cls_name, {})
+        categories_guide.append(
+            {
+                "class_key": cls_name,
+                "display_name": meta.get("display_name", cls_name.capitalize()),
+                "color": meta.get("color", "#64748b"),
+                "icon": meta.get("icon", "fa-circle-info"),
+                "severity": meta.get("severity", "Normal"),
+                "simple_summary": meta.get("simple_summary", ""),
+                "plain_details": meta.get("plain_details", ""),
+                "what_it_means": meta.get("what_it_means", ""),
+                "average_confidence_pct": avg_confidences.get(cls_name, 0.0),
+                "is_detected": (cls_name == consensus_class),
+                "model_votes": votes.get(cls_name, 0),
+                "total_models": total_models,
+            }
+        )
 
     return {
         "success": True,
-        "consensus_prediction": top_pred["predicted_class"] if top_pred else "Unknown",
-        "consensus_confidence": top_pred["confidence_pct"] if top_pred else 0,
+        "consensus_prediction": consensus_class,
+        "consensus_display_name": consensus_meta.get("display_name", consensus_class.capitalize()),
+        "consensus_confidence": consensus_confidence,
+        "agreement_count": agreement_count,
+        "total_models": total_models,
+        "agreement_text": f"{agreement_count} of {total_models} AI Models Agree",
+        "plain_summary": plain_summary,
+        "categories_guide": categories_guide,
         "original_image_b64": f"data:image/jpeg;base64,{orig_b64}",
         "gradcam_image_b64": f"data:image/jpeg;base64,{gradcam_b64}" if gradcam_b64 else None,
         "model_results": model_predictions,
