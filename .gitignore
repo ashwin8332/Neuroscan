@@ -1,0 +1,67 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# C extensions
+*.so
+
+# Distribution / packaging
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Virtual Environments
+.venv/
+venv/
+ENV/
+env/
+env.bak/
+venv.bak/
+
+# Jupyter Notebook checkpoints
+.ipynb_checkpoints/
+*/.ipynb_checkpoints/*
+
+# Full Raw Dataset (7,000+ images, 150MB+; use sample_scans/ for offline test or download via README Kaggle link)
+Dataset/
+brain-tumor-mri-dataset/
+
+# Large Model Checkpoints exceeding GitHub 100MB limit
+# ViT-B/16 is 328MB. Download via Google Drive / Hugging Face links or train in Google Colab (notebooks/Brain_Tumor_Colab_Training.ipynb).
+models/*vit*.pth
+models/best_*.pth
+
+# Keep lightweight checkpoints (<50MB) in repo for instant out-of-the-box inference:
+# !models/custom_cnn_final_model.pth (5.5MB)
+# !models/mobilenet_v3_final_model.pth (4.2MB)
+# !models/resnet18_final_model.pth (43.2MB)
+
+# Logs & temp files
+*.log
+scratch/
+temp/
+
+# Operating System files
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# IDE & Editor configuration
+.vscode/
+.idea/
+*.sublime-project
+*.sublime-workspace

@@ -1,0 +1,5 @@
+Model,Test Accuracy (%),Error Rate (%),CE Loss,Macro F1,ROC-AUC,Glioma F1,Meningioma F1,No Tumor F1,Pituitary F1,Latency (ms/img),Total Parameters
+Custom CNN,79.49,20.51,0.6373,0.7888,0.9409,0.7197,0.6826,0.8257,0.9271,33.56,1439748
+ResNet-18 (Transfer Learning),95.0,5.0,0.3137,0.9491,0.9924,0.8974,0.9249,0.9828,0.9913,65.26,11308868
+MobileNetV3 (Efficient CNN),93.68,6.32,0.354,0.9355,0.9906,0.879,0.918,0.95,0.995,22.6,1075748
+Vision Transformer (ViT-B/16),94.25,5.75,0.2961,0.9409,0.9902,0.888,0.9282,0.9684,0.9791,423.54,85996548
