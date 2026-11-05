@@ -1,5 +1,9 @@
+"""Evaluation metrics: accuracy, error, calibration and clinical screening view."""
+from __future__ import annotations
+
 import time
-from typing import Any, Dict, List, Tuple
+from typing import Any, Dict, List, Optional, Tuple
+
 import numpy as np
 import torch
 import torch.nn.functional as F
@@ -12,8 +16,45 @@ from sklearn.metrics import (
     precision_recall_fscore_support,
     roc_auc_score,
 )
+from tqdm import tqdm
 
-from .config import CLASS_NAMES
+from .config import CLASS_NAMES, CLASS_TO_IDX
+
+
+def expected_calibration_error(y_true: np.ndarray, y_prob: np.ndarray, n_bins: int = 15) -> float:
+    """ECE: average |confidence - accuracy| over equal-width confidence bins.
+
+    0 means the displayed confidence can be taken at face value; the original
+    models showed ~100% confidence even on misclassified scans.
+    """
+    confidences = y_prob.max(axis=1)
+    correct = (y_prob.argmax(axis=1) == y_true).astype(np.float64)
+    edges = np.linspace(0.0, 1.0, n_bins + 1)
+    ece = 0.0
+    for low, high in zip(edges[:-1], edges[1:]):
+        in_bin = (confidences > low) & (confidences <= high)
+        if in_bin.any():
+            ece += in_bin.mean() * abs(correct[in_bin].mean() - confidences[in_bin].mean())
+    return float(ece)
+
+
+def screening_metrics(y_true: np.ndarray, y_pred: np.ndarray, normal_class: str = "notumor") -> Dict[str, float]:
+    """Binary tumor-vs-no-tumor view - the question a patient actually asks.
+
+    Sensitivity = share of tumor scans flagged as *some* tumor (missing a tumor
+    is the costly error); specificity = share of normal scans called normal.
+    """
+    normal_idx = CLASS_TO_IDX[normal_class]
+    is_tumor = y_true != normal_idx
+    flagged = y_pred != normal_idx
+    sensitivity = float(flagged[is_tumor].mean()) if is_tumor.any() else float("nan")
+    specificity = float((~flagged[~is_tumor]).mean()) if (~is_tumor).any() else float("nan")
+    return {
+        "tumor_sensitivity": round(sensitivity, 4),
+        "tumor_specificity": round(specificity, 4),
+        "missed_tumors": int((is_tumor & ~flagged).sum()),
+        "false_alarms": int((~is_tumor & flagged).sum()),
+    }
 
 
 def compute_comprehensive_metrics(
@@ -23,116 +64,128 @@ def compute_comprehensive_metrics(
     class_names: List[str] = CLASS_NAMES,
     latency_ms_per_sample: float = 0.0,
 ) -> Dict[str, Any]:
-    """
-    Computes an extensive set of error, accuracy, discrimination, and efficiency metrics.
-    
-    Args:
-        y_true: True class labels (shape: [N])
-        y_pred: Predicted class labels (shape: [N])
-        y_prob: Softmax probability distribution (shape: [N, num_classes])
-        class_names: List of class strings
-        latency_ms_per_sample: Inference latency in milliseconds per image
-    """
+    """Error, accuracy, discrimination, calibration and efficiency metrics."""
     total_samples = len(y_true)
     num_classes = len(class_names)
+    labels = list(range(num_classes))
 
-    # 1. Error Metrics
     misclassified = int(np.sum(y_true != y_pred))
-    error_rate_pct = (misclassified / total_samples) * 100.0
+    error_rate_pct = (misclassified / max(total_samples, 1)) * 100.0
 
-    # Cross-Entropy / Log Loss
-    # Clip probabilities for numerical stability
-    clipped_probs = np.clip(y_prob, 1e-7, 1.0 - 1e-7)
-    clipped_probs /= clipped_probs.sum(axis=1, keepdims=True)
+    clipped = np.clip(y_prob, 1e-7, 1.0)
+    clipped = clipped / clipped.sum(axis=1, keepdims=True)
     try:
-        ce_loss = float(log_loss(y_true, clipped_probs, labels=list(range(num_classes))))
-    except Exception:
+        ce_loss = float(log_loss(y_true, clipped, labels=labels))
+    except ValueError:
         ce_loss = float("nan")
 
-    # 2. Accuracy Metrics
-    accuracy_pct = float(accuracy_score(y_true, y_pred) * 100.0)
-    balanced_acc_pct = float(balanced_accuracy_score(y_true, y_pred) * 100.0)
-
-    # 3. Precision, Recall, F1
     precision_macro, recall_macro, f1_macro, _ = precision_recall_fscore_support(
-        y_true, y_pred, average="macro", zero_division=0
+        y_true, y_pred, labels=labels, average="macro", zero_division=0
     )
-    precision_weighted, recall_weighted, f1_weighted, _ = precision_recall_fscore_support(
-        y_true, y_pred, average="weighted", zero_division=0
+    _, _, f1_weighted, _ = precision_recall_fscore_support(
+        y_true, y_pred, labels=labels, average="weighted", zero_division=0
     )
-
-    # Per-Class Precision, Recall, F1
     p_class, r_class, f1_class, support_class = precision_recall_fscore_support(
-        y_true, y_pred, labels=list(range(num_classes)), average=None, zero_division=0
+        y_true, y_pred, labels=labels, average=None, zero_division=0
     )
-
-    per_class_metrics = {}
-    for i, name in enumerate(class_names):
-        per_class_metrics[name] = {
+    per_class = {
+        name: {
             "precision": float(p_class[i]),
             "recall": float(r_class[i]),
             "f1_score": float(f1_class[i]),
             "support": int(support_class[i]),
-            "error_rate_pct": float((1.0 - r_class[i]) * 100.0),  # Class-specific miss rate
+            "error_rate_pct": float((1.0 - r_class[i]) * 100.0),
         }
-
-    # 4. Multi-class ROC-AUC (One-vs-Rest)
-    try:
-        auc_macro = float(roc_auc_score(y_true, clipped_probs, multi_class="ovr", average="macro"))
-    except Exception:
-        auc_macro = float("nan")
+        for i, name in enumerate(class_names)
+    }
 
     try:
-        auc_weighted = float(roc_auc_score(y_true, clipped_probs, multi_class="ovr", average="weighted"))
-    except Exception:
-        auc_weighted = float("nan")
+        auc_macro = float(roc_auc_score(y_true, clipped, multi_class="ovr", average="macro", labels=labels))
+        auc_weighted = float(roc_auc_score(y_true, clipped, multi_class="ovr", average="weighted", labels=labels))
+    except ValueError:  # a class is absent from y_true (e.g. tiny or filtered test sets)
+        auc_macro = auc_weighted = float("nan")
 
-    # 5. Confusion Matrix
-    cm = confusion_matrix(y_true, y_pred, labels=list(range(num_classes)))
-
-    # Classification report dict
-    report_dict = classification_report(
-        y_true,
-        y_pred,
-        target_names=class_names,
-        output_dict=True,
-        zero_division=0,
+    cm = confusion_matrix(y_true, y_pred, labels=labels)
+    report = classification_report(
+        y_true, y_pred, labels=labels, target_names=class_names, output_dict=True, zero_division=0
     )
 
-    return {
-        # Overall Error Metrics
+    metrics: Dict[str, Any] = {
         "total_samples": total_samples,
         "misclassified_samples": misclassified,
         "error_rate_pct": round(error_rate_pct, 2),
         "cross_entropy_loss": round(ce_loss, 4),
-        
-        # Overall Accuracy & Score Metrics
-        "test_accuracy_pct": round(accuracy_pct, 2),
-        "balanced_accuracy_pct": round(balanced_acc_pct, 2),
+        "test_accuracy_pct": round(float(accuracy_score(y_true, y_pred) * 100.0), 2),
+        "balanced_accuracy_pct": round(float(balanced_accuracy_score(y_true, y_pred) * 100.0), 2),
         "macro_f1": round(float(f1_macro), 4),
         "macro_precision": round(float(precision_macro), 4),
         "macro_recall": round(float(recall_macro), 4),
         "weighted_f1": round(float(f1_weighted), 4),
         "auc_macro": round(auc_macro, 4),
         "auc_weighted": round(auc_weighted, 4),
-        
-        # Per-Class Metrics
-        "per_class": per_class_metrics,
-        "glioma_f1": round(float(per_class_metrics.get("glioma", {}).get("f1_score", 0)), 4),
-        "meningioma_f1": round(float(per_class_metrics.get("meningioma", {}).get("f1_score", 0)), 4),
-        "notumor_f1": round(float(per_class_metrics.get("notumor", {}).get("f1_score", 0)), 4),
-        "pituitary_f1": round(float(per_class_metrics.get("pituitary", {}).get("f1_score", 0)), 4),
-        
-        # Matrices & Reports
+        "ece": round(expected_calibration_error(y_true, clipped), 4),
+        "mean_confidence": round(float(clipped.max(axis=1).mean()), 4),
+        "per_class": per_class,
         "confusion_matrix": cm.tolist(),
-        "classification_report": report_dict,
-        
-        # Latency
+        "classification_report": report,
         "latency_ms_per_image": round(latency_ms_per_sample, 2),
     }
+    for name in class_names:
+        metrics[f"{name}_f1"] = round(per_class[name]["f1_score"], 4)
+    if "notumor" in class_names:
+        metrics.update(screening_metrics(y_true, y_pred))
+    return metrics
 
 
-from tqdm import tqdm
+@torch.no_grad()
+def collect_logits(
+    model: torch.nn.Module,
+    loader: torch.utils.data.DataLoader,
+    device: torch.device,
+    tta: bool = False,
+    desc: Optional[str] = None,
+) -> Tuple[torch.Tensor, torch.Tensor]:
+    """Run the model over a loader and return (logits, labels) on CPU.
+
+    With ``tta=True`` logits are averaged with those of the mirrored image
+    (left/right flips are anatomically plausible).
+    """
+    model.eval()
+    all_logits, all_labels = [], []
+    iterator = tqdm(loader, desc=desc, unit="batch", leave=False, disable=None) if desc else loader
+    for images, labels in iterator:
+        images = images.to(device, non_blocking=True)
+        logits = model(images)
+        if tta:
+            logits = 0.5 * (logits + model(torch.flip(images, dims=[3])))
+        all_logits.append(logits.float().cpu())
+        all_labels.append(labels.cpu())
+    return torch.cat(all_logits), torch.cat(all_labels)
+
+
+@torch.no_grad()
+def measure_latency(
+    model: torch.nn.Module,
+    device: torch.device,
+    image_size: int = 224,
+    runs: int = 30,
+    warmup: int = 5,
+) -> float:
+    """Median single-image forward latency in milliseconds (model only, no I/O)."""
+    model.eval()
+    x = torch.randn(1, 3, image_size, image_size, device=device)
+    for _ in range(warmup):
+        model(x)
+    timings = []
+    for _ in range(runs):
+        if device.type == "cuda":
+            torch.cuda.synchronize()
+        start = time.perf_counter()
+        model(x)
+        if device.type == "cuda":
+            torch.cuda.synchronize()
+        timings.append((time.perf_counter() - start) * 1000.0)
+    return float(np.median(timings))
 
 
 def evaluate_model_on_loader(
@@ -141,40 +194,15 @@ def evaluate_model_on_loader(
     device: torch.device,
     class_names: List[str] = CLASS_NAMES,
     desc: str = "Evaluating",
+    temperature: float = 1.0,
+    tta: bool = False,
+    measure_speed: bool = True,
 ) -> Tuple[Dict[str, Any], np.ndarray, np.ndarray, np.ndarray]:
-    """
-    Run full inference on DataLoader and return metrics dictionary + raw arrays.
-    """
-    model.eval()
-    y_true_list = []
-    y_pred_list = []
-    y_prob_list = []
-
-    start_time = time.time()
-    total_images = 0
-
-    pbar = tqdm(loader, desc=desc, unit="batch", leave=False)
-    with torch.no_grad():
-        for images, labels in pbar:
-            images = images.to(device)
-            logits = model(images)
-            probs = F.softmax(logits, dim=1)
-            preds = logits.argmax(dim=1)
-
-            y_true_list.extend(labels.cpu().numpy())
-            y_pred_list.extend(preds.cpu().numpy())
-            y_prob_list.extend(probs.cpu().numpy())
-            total_images += images.size(0)
-
-    total_time = time.time() - start_time
-    latency_ms = (total_time / max(total_images, 1)) * 1000.0
-
-    y_true = np.array(y_true_list)
-    y_pred = np.array(y_pred_list)
-    y_prob = np.array(y_prob_list)
-
-    metrics = compute_comprehensive_metrics(
-        y_true, y_pred, y_prob, class_names=class_names, latency_ms_per_sample=latency_ms
-    )
-
-    return metrics, y_true, y_pred, y_prob
+    """Full inference over a loader -> (metrics, y_true, y_pred, y_prob)."""
+    logits, labels = collect_logits(model, loader, device, tta=tta, desc=desc)
+    probs = F.softmax(logits / temperature, dim=1).numpy()
+    y_true = labels.numpy()
+    y_pred = probs.argmax(axis=1)
+    latency = measure_latency(model, device) if measure_speed else 0.0
+    metrics = compute_comprehensive_metrics(y_true, y_pred, probs, class_names, latency)
+    return metrics, y_true, y_pred, probs
