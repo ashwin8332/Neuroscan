@@ -1,766 +1,737 @@
-/* ==========================================================================
-   NEUROSCAN AI: CLIENT LOGIC & REAL-TIME INFERENCE CONTROLLER
-   ========================================================================== */
+/* NeuroScan AI - client.
+ * Vanilla JS, no build step. All server data is rendered through `el()` /
+ * textContent (never innerHTML) so file names or metadata cannot inject markup.
+ */
+(() => {
+  "use strict";
 
-document.addEventListener("DOMContentLoaded", () => {
-  // Global State
-  let activeTab = "tab-diagnostic";
-  let selectedFile = null;
-  let selectedSampleId = null;
-  let systemStatus = null;
-  let benchmarkMetrics = null;
+  const CLASSES = ["glioma", "meningioma", "notumor", "pituitary"];
+  const css = getComputedStyle(document.documentElement);
+  const COLORS = Object.fromEntries(CLASSES.map((c) => [c, css.getPropertyValue(`--${c}`).trim()]));
+  const LABELS = { glioma: "Glioma", meningioma: "Meningioma", notumor: "No tumor", pituitary: "Pituitary" };
+  const ACCEPTED_TYPES = ["image/jpeg", "image/png"];
 
-  // Chart Instances
-  let accErrChart = null;
-  let f1AucChart = null;
-  let perClassChart = null;
-  let confusionMatrixChart = null;
-
-  // Color mapping
-  const CLASS_COLORS = {
-    glioma: "#f43f5e",
-    meningioma: "#f59e0b",
-    notumor: "#10b981",
-    pituitary: "#3b82f6",
+  const state = {
+    status: null,
+    metrics: null,
+    histories: {},
+    meta: {},
+    file: null,
+    sampleId: null,
+    previewUrl: null,
+    charts: {},
+    rendered: { benchmark: false, errors: false, training: false, guide: false },
+    maxUploadMb: 10,
   };
 
-  /* ==================== 1. TAB NAVIGATION ==================== */
-  const tabButtons = document.querySelectorAll(".nav-tab");
-  const tabPanes = document.querySelectorAll(".tab-pane");
+  /* ------------------------------------------------------------ helpers */
+  const $ = (sel, root = document) => root.querySelector(sel);
 
-  tabButtons.forEach((btn) => {
-    btn.addEventListener("click", () => {
-      const targetId = btn.getAttribute("data-tab");
-      if (targetId === activeTab) return;
+  function el(tag, props = {}, ...children) {
+    const node = document.createElement(tag);
+    for (const [key, value] of Object.entries(props || {})) {
+      if (value === undefined || value === null || value === false) continue;
+      if (key === "class") node.className = value;
+      else if (key === "text") node.textContent = value;
+      else if (key === "style") Object.assign(node.style, value);
+      else if (key === "vars") for (const [k, v] of Object.entries(value)) node.style.setProperty(k, v);
+      else if (key.startsWith("on")) node.addEventListener(key.slice(2), value);
+      else node.setAttribute(key, value === true ? "" : value);
+    }
+    for (const child of children.flat()) {
+      if (child === null || child === undefined || child === false) continue;
+      node.append(child instanceof Node ? child : document.createTextNode(String(child)));
+    }
+    return node;
+  }
 
-      tabButtons.forEach((b) => b.classList.remove("active"));
-      tabPanes.forEach((p) => p.classList.remove("active"));
+  const pct = (v, digits = 1) => (Number.isFinite(v) ? `${v.toFixed(digits)}%` : "–");
+  const num = (v, digits = 3) => (Number.isFinite(v) ? v.toFixed(digits) : "–");
+  const classLabel = (c) => LABELS[c] || c;
+  const shortModel = (name) => (name || "").replace(/\s*\(.*\)$/, "");
 
-      btn.classList.add("active");
-      const targetPane = document.getElementById(targetId);
-      if (targetPane) {
-        targetPane.classList.add("active");
-        activeTab = targetId;
+  async function fetchJSON(url, options) {
+    let res;
+    try {
+      res = await fetch(url, options);
+    } catch (err) {
+      if (err && err.name === "AbortError") throw err;
+      throw new Error("Cannot reach the NeuroScan server. Is it running?");
+    }
+    let data = null;
+    try { data = await res.json(); } catch { /* non-JSON error page */ }
+    if (!res.ok) throw new Error((data && (data.error || data.detail)) || `Request failed (${res.status})`);
+    return data;
+  }
 
-        // Resize charts if switching to benchmark tabs
-        if (targetId === "tab-benchmark") {
-          setTimeout(initOrUpdateBenchmarkCharts, 100);
-        } else if (targetId === "tab-error-analysis") {
-          setTimeout(initOrUpdateConfusionMatrix, 100);
-        }
-      }
+  let toastTimer = null;
+  function toast(message, isError = false) {
+    const node = $("#toast");
+    node.textContent = message;
+    node.classList.toggle("is-error", isError);
+    node.hidden = false;
+    clearTimeout(toastTimer);
+    toastTimer = setTimeout(() => { node.hidden = true; }, 4500);
+  }
+
+  /* ------------------------------------------------------------ tabs */
+  const tabs = Array.from(document.querySelectorAll('[role="tab"]'));
+
+  function selectTab(tab, { focus = false, updateHash = true } = {}) {
+    for (const t of tabs) {
+      const selected = t === tab;
+      t.setAttribute("aria-selected", String(selected));
+      t.tabIndex = selected ? 0 : -1;
+      document.getElementById(t.getAttribute("aria-controls")).hidden = !selected;
+    }
+    if (focus) tab.focus();
+    const name = tab.id.replace("tab-", "");
+    if (updateHash) history.replaceState(null, "", name === "diagnose" ? location.pathname : `#${name}`);
+    renderTab(name);
+  }
+
+  tabs.forEach((tab, index) => {
+    tab.addEventListener("click", () => selectTab(tab));
+    tab.addEventListener("keydown", (event) => {
+      const moves = { ArrowRight: 1, ArrowLeft: -1, Home: -index, End: tabs.length - 1 - index };
+      if (!(event.key in moves)) return;
+      event.preventDefault();
+      selectTab(tabs[(index + moves[event.key] + tabs.length) % tabs.length], { focus: true });
     });
   });
 
-  /* ==================== 2. SYSTEM STATUS & INITIALIZATION ==================== */
-  async function fetchSystemStatus() {
+  function renderTab(name) {
+    if (name === "benchmark") renderBenchmark();
+    else if (name === "errors") renderErrors();
+    else if (name === "training") renderTraining();
+    else if (name === "guide") renderGuide();
+  }
+
+  /* ------------------------------------------------------------ status */
+  async function loadStatus() {
+    const chip = $("#chip-engine");
     try {
-      const res = await fetch("/api/status");
-      if (!res.ok) throw new Error("Failed to load status");
-      systemStatus = await res.json();
-
-      // Update Header Badges
-      const deviceText = document.getElementById("status-device-text");
-      if (deviceText) {
-        deviceText.textContent = `Neural Engine: ${systemStatus.device.toUpperCase()}`;
+      state.status = await fetchJSON("/api/status");
+      const s = state.status;
+      chip.classList.add("is-ok");
+      $("#status-engine").textContent = `Engine ${s.device.toUpperCase()}${s.tta ? " · TTA" : ""}`;
+      $("#status-models").textContent = `${s.loaded_models}/${s.total_models} models`;
+      if (s.disclaimer) $("#disclaimer-text").textContent = s.disclaimer;
+      if (s.max_upload_mb) {
+        state.maxUploadMb = s.max_upload_mb;
+        $("#max-upload").textContent = String(s.max_upload_mb);
       }
-
-      const checkpointsCount = document.getElementById("checkpoints-count");
-      if (checkpointsCount && systemStatus.models) {
-        const trained = systemStatus.models.filter((m) => m.is_trained).length;
-        checkpointsCount.textContent = `${trained}/4 Models Trained`;
+      if (s.loaded_models === 0) {
+        showInputError("No trained model checkpoints are installed on the server. Train models (python train.py) or copy checkpoints into models/.");
       }
+      renderGuide(true);
     } catch (err) {
-      console.warn("Status fetch error (offline demo mode fallback):", err);
-      const deviceText = document.getElementById("status-device-text");
-      if (deviceText) deviceText.textContent = "Neural Engine: Ready";
+      chip.classList.add("is-error");
+      $("#status-engine").textContent = "Engine offline";
+      showInputError(err.message);
     }
   }
 
-  /* ==================== 3. SAMPLES GRID PRESETS ==================== */
-  async function fetchSamples() {
-    const container = document.getElementById("samples-container");
-    if (!container) return;
-
+  /* ------------------------------------------------------------ samples */
+  async function loadSamples() {
+    const box = $("#samples");
     try {
-      const res = await fetch("/api/samples");
-      const data = await res.json();
-      container.innerHTML = "";
-
-      if (!data.samples || data.samples.length === 0) {
-        container.innerHTML = "<p class='text-muted'>No sample scans found.</p>";
+      const { samples } = await fetchJSON("/api/samples");
+      box.replaceChildren();
+      if (!samples.length) {
+        box.append(el("p", { class: "hint", text: "No sample scans found." }));
         return;
       }
-
-      data.samples.forEach((sample) => {
-        const btn = document.createElement("button");
-        btn.type = "button";
-        btn.className = "sample-btn";
-        btn.innerHTML = `
-          <img src="${sample.path}" alt="${sample.class}" class="sample-thumb">
-          <div class="sample-meta">
-            <span class="sample-class" style="color: ${CLASS_COLORS[sample.class] || '#fff'}">${sample.class}</span>
-            <span class="sample-file">${sample.filename}</span>
-          </div>
-        `;
-
-        btn.addEventListener("click", () => {
-          loadSampleImage(sample);
-        });
-
-        container.appendChild(btn);
-      });
-    } catch (err) {
-      console.warn("Samples load error:", err);
-    }
-  }
-
-  function loadSampleImage(sample) {
-    selectedFile = null;
-    selectedSampleId = sample.id;
-
-    const preview = document.getElementById("image-preview");
-    const previewContainer = document.getElementById("scan-preview-container");
-    const dropPrompt = document.getElementById("drop-zone-prompt");
-    const runBtn = document.getElementById("run-inference-btn");
-
-    preview.src = sample.path;
-    previewContainer.style.display = "block";
-    dropPrompt.style.display = "none";
-    runBtn.disabled = false;
-
-    // Automatically trigger inference on preset click for snappy UX
-    triggerInference();
-  }
-
-  /* ==================== 4. DROP ZONE & UPLOAD CONTROLS ==================== */
-  const dropZone = document.getElementById("drop-zone");
-  const fileInput = document.getElementById("file-input");
-  const browseBtn = document.getElementById("browse-btn");
-  const previewContainer = document.getElementById("scan-preview-container");
-  const imagePreview = document.getElementById("image-preview");
-  const dropPrompt = document.getElementById("drop-zone-prompt");
-  const clearPreviewBtn = document.getElementById("clear-preview-btn");
-  const runBtn = document.getElementById("run-inference-btn");
-  const scanningLaser = document.getElementById("scanning-laser");
-
-  browseBtn.addEventListener("click", (e) => {
-    e.stopPropagation();
-    fileInput.click();
-  });
-
-  dropZone.addEventListener("click", () => {
-    if (!selectedFile && !selectedSampleId) {
-      fileInput.click();
-    }
-  });
-
-  fileInput.addEventListener("change", (e) => {
-    if (e.target.files && e.target.files[0]) {
-      handleUserFile(e.target.files[0]);
-    }
-  });
-
-  dropZone.addEventListener("dragover", (e) => {
-    e.preventDefault();
-    dropZone.classList.add("dragover");
-  });
-
-  dropZone.addEventListener("dragleave", () => {
-    dropZone.classList.remove("dragover");
-  });
-
-  dropZone.addEventListener("drop", (e) => {
-    e.preventDefault();
-    dropZone.classList.remove("dragover");
-    if (e.dataTransfer.files && e.dataTransfer.files[0]) {
-      handleUserFile(e.dataTransfer.files[0]);
-    }
-  });
-
-  function handleUserFile(file) {
-    selectedFile = file;
-    selectedSampleId = null;
-
-    const reader = new FileReader();
-    reader.onload = (event) => {
-      imagePreview.src = event.target.result;
-      previewContainer.style.display = "block";
-      dropPrompt.style.display = "none";
-      runBtn.disabled = false;
-    };
-    reader.readAsDataURL(file);
-  }
-
-  clearPreviewBtn.addEventListener("click", (e) => {
-    e.stopPropagation();
-    selectedFile = null;
-    selectedSampleId = null;
-    fileInput.value = "";
-    previewContainer.style.display = "none";
-    dropPrompt.style.display = "block";
-    runBtn.disabled = true;
-
-    // Reset results panels
-    document.getElementById("consensus-panel").style.display = "none";
-    document.getElementById("gradcam-card").style.display = "none";
-    document.getElementById("models-results-container").innerHTML = `
-      <div class="empty-state-card card glass-card">
-        <div class="empty-state-icon"><i class="fa-solid fa-brain"></i></div>
-        <h3>No Scan Analyzed Yet</h3>
-        <p>Upload an MRI scan or click on one of the quick test presets on the left to inspect predictions across models.</p>
-      </div>
-    `;
-  });
-
-  /* ==================== 5. RUN MULTI-MODEL INFERENCE ==================== */
-  runBtn.addEventListener("click", () => {
-    triggerInference();
-  });
-
-  async function triggerInference() {
-    if (!selectedFile && !selectedSampleId) return;
-
-    // Start UI scanning animation
-    scanningLaser.classList.add("active");
-    runBtn.disabled = true;
-    runBtn.innerHTML = `<i class="fa-solid fa-spinner fa-spin"></i> Analyzing Across 4 Models...`;
-
-    const formData = new FormData();
-    if (selectedFile) {
-      formData.append("file", selectedFile);
-    } else if (selectedSampleId) {
-      formData.append("sample_id", selectedSampleId);
-    }
-
-    try {
-      const res = await fetch("/api/predict", {
-        method: "POST",
-        body: formData,
-      });
-
-      if (!res.ok) throw new Error("Inference failed");
-      const data = await res.json();
-      renderInferenceResults(data);
-    } catch (err) {
-      console.error("Inference request error:", err);
-      alert("Inference error: " + err.message);
-    } finally {
-      scanningLaser.classList.remove("active");
-      runBtn.disabled = false;
-      runBtn.innerHTML = `<i class="fa-solid fa-bolt-lightning"></i> Run Multi-Model Diagnostic`;
-    }
-  }
-
-  function renderInferenceResults(data) {
-    if (!data.success) return;
-
-    // 1. Render Patient-Friendly Scan Assessment Panel
-    const consensusPanel = document.getElementById("consensus-panel");
-    const consensusTitle = document.getElementById("consensus-title");
-    const consensusBadge = document.getElementById("consensus-severity-badge");
-    const consensusDesc = document.getElementById("consensus-description");
-    const agreementText = document.getElementById("consensus-agreement-text");
-    const avgConf = document.getElementById("consensus-avg-conf");
-    const guideGrid = document.getElementById("classes-guide-grid");
-
-    const topClass = data.consensus_prediction;
-    const topConf = data.consensus_confidence;
-    const displayName = data.consensus_display_name || topClass.toUpperCase();
-
-    consensusTitle.textContent = displayName;
-    consensusTitle.style.color = CLASS_COLORS[topClass] || "#10b981";
-
-    if (agreementText) {
-      agreementText.textContent = data.agreement_text || `${data.agreement_count || 4} of 4 AI Models Agree`;
-    }
-    if (avgConf) {
-      avgConf.textContent = `${topConf}% Consensus Confidence`;
-    }
-
-    if (topClass === "notumor") {
-      consensusBadge.textContent = "Normal / Clear";
-      consensusBadge.className = "consensus-badge badge-emerald";
-    } else if (topClass === "glioma") {
-      consensusBadge.textContent = "High Severity";
-      consensusBadge.className = "consensus-badge badge-rose";
-    } else if (topClass === "meningioma") {
-      consensusBadge.textContent = "Moderate Severity";
-      consensusBadge.className = "consensus-badge badge-amber";
-    } else {
-      consensusBadge.textContent = "Moderate Severity";
-      consensusBadge.className = "consensus-badge badge-blue";
-    }
-
-    // Set plain-English summary description
-    consensusDesc.textContent = data.plain_summary || "Multi-model evaluation completed successfully.";
-
-    // Render 4-Category Patient Reference Guide Cards
-    if (guideGrid && data.categories_guide) {
-      guideGrid.innerHTML = "";
-      data.categories_guide.forEach((cat) => {
-        const card = document.createElement("div");
-        const isDet = cat.is_detected;
-        const severityClass = cat.severity.includes("High") ? "severity-high" : (cat.severity.includes("Moderate") ? "severity-moderate" : "");
-        card.className = `guide-card ${isDet ? 'detected-card ' + severityClass : 'ruled-out-card'}`;
-        card.style.borderLeft = `4px solid ${cat.color}`;
-
-        const statusBadge = isDet
-          ? `<span class="detected-badge"><i class="fa-solid fa-bullseye"></i> IDENTIFIED MATCH (${cat.average_confidence_pct}%)</span>`
-          : `<span class="ruled-out-badge"><i class="fa-solid fa-circle-minus"></i> Not Detected (${cat.average_confidence_pct}%)</span>`;
-
-        card.innerHTML = `
-          <div>
-            <div class="guide-card-top">
-              <div class="guide-card-title-group">
-                <div class="guide-card-icon" style="background: ${cat.color}22; color: ${cat.color};">
-                  <i class="fa-solid ${cat.icon || 'fa-brain'}"></i>
-                </div>
-                <div>
-                  <div class="guide-card-name">${cat.display_name}</div>
-                </div>
-              </div>
-              ${statusBadge}
-            </div>
-
-            <p class="guide-card-summary"><strong>Overview:</strong> ${cat.simple_summary}</p>
-            <div class="guide-card-details">
-              <strong>Location & Details:</strong> ${cat.plain_details}
-            </div>
-          </div>
-
-          <div class="guide-card-footer">
-            <span>Model Consensus: <strong>${cat.model_votes} of ${cat.total_models || 4} Models</strong></span>
-            <span class="guide-confidence-pill" style="color: ${cat.color};">Avg: ${cat.average_confidence_pct}%</span>
-          </div>
-        `;
-        guideGrid.appendChild(card);
-      });
-    }
-
-    consensusPanel.style.display = "block";
-
-    // 2. Render Grad-CAM Heatmap
-    const gradcamCard = document.getElementById("gradcam-card");
-    const camOrigImg = document.getElementById("cam-orig-img");
-    const camBaseImg = document.getElementById("cam-base-img");
-    const camHeatImg = document.getElementById("cam-heat-img");
-
-    if (data.gradcam_image_b64) {
-      camOrigImg.src = data.original_image_b64;
-      camBaseImg.src = data.original_image_b64;
-      camHeatImg.src = data.gradcam_image_b64;
-      gradcamCard.style.display = "block";
-    } else {
-      gradcamCard.style.display = "none";
-    }
-
-    // 3. Render 4 Model Cards
-    const resultsContainer = document.getElementById("models-results-container");
-    resultsContainer.innerHTML = "";
-
-    data.model_results.forEach((model) => {
-      const card = document.createElement("div");
-      card.className = "card glass-card model-card";
-      card.style.borderTopColor = model.color;
-
-      const checkpointBadge = model.is_checkpoint_loaded
-        ? `<span class="badge-pill" style="border-color: #10b981; color: #34d399; background: rgba(16,185,129,0.1);"><i class="fa-solid fa-check"></i> Trained Checkpoint</span>`
-        : `<span class="badge-pill" style="border-color: #f59e0b; color: #fbbf24; background: rgba(245,158,11,0.1);"><i class="fa-solid fa-clock"></i> ImageNet Base</span>`;
-
-      // Build 4 probability progress bars
-      let barsHtml = "";
-      for (const [cls, prob] of Object.entries(model.confidences)) {
-        const clsColor = CLASS_COLORS[cls] || "#06b6d4";
-        barsHtml += `
-          <div class="conf-bar-item">
-            <div class="conf-bar-header">
-              <span>${cls}</span>
-              <span>${prob}%</span>
-            </div>
-            <div class="conf-progress-bg">
-              <div class="conf-progress-fill" style="width: ${prob}%; background: ${clsColor};"></div>
-            </div>
-          </div>
-        `;
+      for (const sample of samples) {
+        const button = el(
+          "button",
+          {
+            class: "sample", type: "button", "aria-pressed": "false",
+            "aria-label": `Sample ${classLabel(sample.class)} scan ${sample.filename}`,
+            onclick: () => chooseSample(sample, button),
+          },
+          el("img", { src: sample.path, alt: "", loading: "lazy" }),
+          el("span", { class: "sample__label" }, el("i", { style: { background: COLORS[sample.class] } }), classLabel(sample.class)),
+        );
+        box.append(button);
       }
-
-      card.innerHTML = `
-        <div>
-          <div class="model-card-top">
-            <div>
-              <div class="model-title">${model.display_name}</div>
-              <span class="model-tag">${model.model_key.replace('_', ' ').toUpperCase()}</span>
-            </div>
-            ${checkpointBadge}
-          </div>
-
-          <div class="model-prediction-row">
-            <div>
-              <small style="color: var(--text-muted); font-size: 0.72rem; display: block;">PREDICTED PATHOLOGY</small>
-              <span class="pred-class-text" style="color: ${model.color};">${model.predicted_class}</span>
-            </div>
-            <div style="text-align: right;">
-              <small style="color: var(--text-muted); font-size: 0.72rem; display: block;">CONFIDENCE</small>
-              <span class="pred-confidence" style="color: ${model.color};">${model.confidence_pct}%</span>
-            </div>
-          </div>
-
-          <div class="confidence-breakdown">
-            <small style="color: var(--text-muted); font-size: 0.72rem; font-weight: 700; margin-bottom: 6px; display: block;">PROBABILITY DISTRIBUTION</small>
-            ${barsHtml}
-          </div>
-        </div>
-
-        <div style="margin-top: 14px; padding-top: 10px; border-top: 1px solid rgba(255,255,255,0.06); display: flex; justify-content: space-between; font-size: 0.78rem; color: var(--text-muted);">
-          <span>Error Margin: <strong>${model.error_margin_pct}%</strong></span>
-          <span>Severity: <strong style="color: ${model.color};">${model.severity}</strong></span>
-        </div>
-      `;
-
-      resultsContainer.appendChild(card);
-    });
-  }
-
-  /* ==================== 6. GRAD-CAM OPACITY SLIDER ==================== */
-  const opacitySlider = document.getElementById("opacity-slider");
-  const opacityVal = document.getElementById("opacity-val");
-  const camHeatImg = document.getElementById("cam-heat-img");
-
-  if (opacitySlider && opacityVal && camHeatImg) {
-    opacitySlider.addEventListener("input", (e) => {
-      const val = e.target.value;
-      opacityVal.textContent = `${val}%`;
-      camHeatImg.style.opacity = val / 100.0;
-    });
-  }
-
-  /* ==================== 7. BENCHMARK TABLE & CHARTS ==================== */
-  async function fetchBenchmarkMetrics() {
-    try {
-      const res = await fetch("/api/metrics");
-      const data = await res.json();
-      benchmarkMetrics = data.metrics;
-      renderBenchmarkTable(benchmarkMetrics);
-      initOrUpdateBenchmarkCharts();
-      initOrUpdateConfusionMatrix();
     } catch (err) {
-      console.warn("Metrics fetch error:", err);
+      box.replaceChildren(el("p", { class: "hint", text: `Samples unavailable: ${err.message}` }));
+    } finally {
+      box.setAttribute("aria-busy", "false");
     }
   }
 
-  function renderBenchmarkTable(metrics) {
-    const tbody = document.getElementById("benchmark-tbody");
-    if (!tbody || !metrics) return;
+  /* ------------------------------------------------------------ input */
+  const dropzone = $("#dropzone");
+  const fileInput = $("#file-input");
+  const analyzeBtn = $("#analyze-btn");
 
-    tbody.innerHTML = "";
-    const metricEntries = Object.entries(metrics);
-
-    // Find best scores to highlight
-    const maxAcc = Math.max(...metricEntries.map(([k, v]) => v.test_accuracy_pct));
-    const minErr = Math.min(...metricEntries.map(([k, v]) => v.error_rate_pct));
-    const maxF1 = Math.max(...metricEntries.map(([k, v]) => v.macro_f1));
-
-    metricEntries.forEach(([key, m]) => {
-      const tr = document.createElement("tr");
-
-      const accClass = m.test_accuracy_pct === maxAcc ? "highlight-best" : "";
-      const errClass = m.error_rate_pct === minErr ? "highlight-best" : "";
-      const f1Class = m.macro_f1 === maxF1 ? "highlight-best" : "";
-
-      tr.innerHTML = `
-        <td><strong>${m.display_name}</strong></td>
-        <td class="${accClass}">${m.test_accuracy_pct.toFixed(2)}%</td>
-        <td class="${errClass}">${m.error_rate_pct.toFixed(2)}%</td>
-        <td>${m.cross_entropy_loss.toFixed(4)}</td>
-        <td class="${f1Class}">${m.macro_f1.toFixed(3)}</td>
-        <td>${m.auc_macro ? m.auc_macro.toFixed(3) : "0.985"}</td>
-        <td>${m.latency_ms_per_image ? m.latency_ms_per_image.toFixed(1) : "18.5"} ms</td>
-        <td>${(m.parameters_total / 1e6).toFixed(2)}M</td>
-        <td><span class="tag" style="background: rgba(16,185,129,0.15); color: #34d399;">Active</span></td>
-      `;
-      tbody.appendChild(tr);
-    });
+  function showInputError(message) {
+    const node = $("#input-error");
+    node.textContent = message || "";
+    node.hidden = !message;
   }
 
-  function initOrUpdateBenchmarkCharts() {
-    if (!benchmarkMetrics) return;
+  function setPreview(src, caption) {
+    $("#dropzone-empty").hidden = true;
+    $("#dropzone-preview").hidden = false;
+    $("#preview-img").src = src;
+    $("#preview-name").textContent = caption;
+    analyzeBtn.disabled = false;
+    $("#clear-btn").hidden = false;
+  }
 
-    const labels = Object.values(benchmarkMetrics).map((m) => m.display_name.split(" ")[0]);
-    const accuracies = Object.values(benchmarkMetrics).map((m) => m.test_accuracy_pct);
-    const errors = Object.values(benchmarkMetrics).map((m) => m.error_rate_pct);
-    const f1Scores = Object.values(benchmarkMetrics).map((m) => m.macro_f1);
-    const aucScores = Object.values(benchmarkMetrics).map((m) => m.auc_macro || 0.98);
+  function clearSelection() {
+    if (state.previewUrl) URL.revokeObjectURL(state.previewUrl);
+    Object.assign(state, { file: null, sampleId: null, previewUrl: null });
+    fileInput.value = "";
+    $("#dropzone-empty").hidden = false;
+    $("#dropzone-preview").hidden = true;
+    $("#preview-img").removeAttribute("src");
+    analyzeBtn.disabled = true;
+    $("#clear-btn").hidden = true;
+    document.querySelectorAll(".sample[aria-pressed='true']").forEach((b) => b.setAttribute("aria-pressed", "false"));
+    $("#result-view").hidden = true;
+    $("#empty-state").hidden = false;
+    showInputError("");
+  }
 
-    // Chart 1: Accuracy vs Error Rate
-    const ctxAccErr = document.getElementById("chart-acc-err");
-    if (ctxAccErr) {
-      if (accErrChart) accErrChart.destroy();
-      accErrChart = new Chart(ctxAccErr, {
-        type: "bar",
-        data: {
-          labels: labels,
-          datasets: [
-            {
-              label: "Test Accuracy (%)",
-              data: accuracies,
-              backgroundColor: "rgba(16, 185, 129, 0.75)",
-              borderColor: "#10b981",
-              borderWidth: 1,
-              borderRadius: 6,
-            },
-            {
-              label: "Error Rate (%)",
-              data: errors,
-              backgroundColor: "rgba(244, 63, 94, 0.75)",
-              borderColor: "#f43f5e",
-              borderWidth: 1,
-              borderRadius: 6,
-            },
-          ],
-        },
-        options: {
-          responsive: true,
-          maintainAspectRatio: false,
-          plugins: {
-            legend: { labels: { color: "#94a3b8" } },
-          },
-          scales: {
-            y: {
-              beginAtZero: true,
-              max: 100,
-              grid: { color: "rgba(255, 255, 255, 0.05)" },
-              ticks: { color: "#94a3b8" },
-            },
-            x: {
-              grid: { display: false },
-              ticks: { color: "#94a3b8" },
-            },
-          },
-        },
-      });
+  function chooseFile(file) {
+    showInputError("");
+    if (!file) return;
+    if (!ACCEPTED_TYPES.includes(file.type)) {
+      showInputError(`"${file.name}" is not a JPEG or PNG image.`);
+      return;
     }
-
-    // Chart 2: Macro F1 vs ROC-AUC
-    const ctxF1Auc = document.getElementById("chart-f1-auc");
-    if (ctxF1Auc) {
-      if (f1AucChart) f1AucChart.destroy();
-      f1AucChart = new Chart(ctxF1Auc, {
-        type: "bar",
-        data: {
-          labels: labels,
-          datasets: [
-            {
-              label: "Macro F1-Score",
-              data: f1Scores,
-              backgroundColor: "rgba(6, 182, 212, 0.75)",
-              borderColor: "#06b6d4",
-              borderWidth: 1,
-              borderRadius: 6,
-            },
-            {
-              label: "Multi-class ROC-AUC",
-              data: aucScores,
-              backgroundColor: "rgba(245, 158, 11, 0.75)",
-              borderColor: "#f59e0b",
-              borderWidth: 1,
-              borderRadius: 6,
-            },
-          ],
-        },
-        options: {
-          responsive: true,
-          maintainAspectRatio: false,
-          plugins: {
-            legend: { labels: { color: "#94a3b8" } },
-          },
-          scales: {
-            y: {
-              beginAtZero: true,
-              max: 1.05,
-              grid: { color: "rgba(255, 255, 255, 0.05)" },
-              ticks: { color: "#94a3b8" },
-            },
-            x: {
-              grid: { display: false },
-              ticks: { color: "#94a3b8" },
-            },
-          },
-        },
-      });
+    if (file.size > state.maxUploadMb * 1024 * 1024) {
+      showInputError(`"${file.name}" is ${(file.size / 1048576).toFixed(1)} MB; the limit is ${state.maxUploadMb} MB.`);
+      return;
     }
+    if (state.previewUrl) URL.revokeObjectURL(state.previewUrl);
+    state.file = file;
+    state.sampleId = null;
+    state.previewUrl = URL.createObjectURL(file);
+    document.querySelectorAll(".sample[aria-pressed='true']").forEach((b) => b.setAttribute("aria-pressed", "false"));
+    setPreview(state.previewUrl, `${file.name} · ${(file.size / 1024).toFixed(0)} KB`);
+  }
 
-    // Chart 3: Per-Class F1 Breakdown
-    const ctxPerClass = document.getElementById("chart-per-class");
-    if (ctxPerClass) {
-      if (perClassChart) perClassChart.destroy();
-      perClassChart = new Chart(ctxPerClass, {
-        type: "bar",
-        data: {
-          labels: labels,
-          datasets: [
-            {
-              label: "Glioma F1",
-              data: Object.values(benchmarkMetrics).map((m) => m.glioma_f1 || 0.8),
-              backgroundColor: CLASS_COLORS.glioma,
-              borderRadius: 4,
-            },
-            {
-              label: "Meningioma F1",
-              data: Object.values(benchmarkMetrics).map((m) => m.meningioma_f1 || 0.82),
-              backgroundColor: CLASS_COLORS.meningioma,
-              borderRadius: 4,
-            },
-            {
-              label: "No Tumor F1",
-              data: Object.values(benchmarkMetrics).map((m) => m.notumor_f1 || 0.95),
-              backgroundColor: CLASS_COLORS.notumor,
-              borderRadius: 4,
-            },
-            {
-              label: "Pituitary F1",
-              data: Object.values(benchmarkMetrics).map((m) => m.pituitary_f1 || 0.88),
-              backgroundColor: CLASS_COLORS.pituitary,
-              borderRadius: 4,
-            },
-          ],
-        },
-        options: {
-          responsive: true,
-          maintainAspectRatio: false,
-          plugins: {
-            legend: { labels: { color: "#94a3b8" } },
-          },
-          scales: {
-            y: {
-              beginAtZero: true,
-              max: 1.05,
-              grid: { color: "rgba(255, 255, 255, 0.05)" },
-              ticks: { color: "#94a3b8" },
-            },
-            x: {
-              grid: { display: false },
-              ticks: { color: "#94a3b8" },
-            },
-          },
-        },
-      });
+  function chooseSample(sample, button) {
+    if (state.previewUrl) URL.revokeObjectURL(state.previewUrl);
+    Object.assign(state, { file: null, previewUrl: null, sampleId: sample.id });
+    document.querySelectorAll(".sample").forEach((b) => b.setAttribute("aria-pressed", String(b === button)));
+    setPreview(sample.path, `sample · ${sample.id}`);
+    analyze();
+  }
+
+  dropzone.addEventListener("click", () => fileInput.click());
+  dropzone.addEventListener("keydown", (event) => {
+    if (event.key === "Enter" || event.key === " ") { event.preventDefault(); fileInput.click(); }
+  });
+  fileInput.addEventListener("change", () => chooseFile(fileInput.files[0]));
+  ["dragenter", "dragover"].forEach((type) => dropzone.addEventListener(type, (event) => {
+    event.preventDefault();
+    dropzone.classList.add("is-dragover");
+  }));
+  ["dragleave", "drop"].forEach((type) => dropzone.addEventListener(type, () => dropzone.classList.remove("is-dragover")));
+  dropzone.addEventListener("drop", (event) => {
+    event.preventDefault();
+    chooseFile(event.dataTransfer.files && event.dataTransfer.files[0]);
+  });
+  $("#clear-btn").addEventListener("click", clearSelection);
+  analyzeBtn.addEventListener("click", analyze);
+
+  /* ------------------------------------------------------------ analyze */
+  let inFlight = null;
+
+  async function analyze() {
+    if (!state.file && !state.sampleId) return;
+    if (inFlight) inFlight.abort();
+    const controller = new AbortController();
+    inFlight = controller;
+
+    const form = new FormData();
+    if (state.file) form.append("file", state.file);
+    else form.append("sample_id", state.sampleId);
+
+    showInputError("");
+    setBusy(true);
+    try {
+      const data = await fetchJSON("/api/predict", { method: "POST", body: form, signal: controller.signal });
+      renderResult(data);
+    } catch (err) {
+      if (err.name === "AbortError") return;
+      showInputError(err.message);
+      toast(err.message, true);
+    } finally {
+      if (inFlight === controller) { inFlight = null; setBusy(false); }
     }
   }
 
-  /* ==================== 8. CONFUSION MATRIX VISUALIZER ==================== */
-  const cmSelect = document.getElementById("cm-model-select");
-  if (cmSelect) {
-    cmSelect.addEventListener("change", () => {
-      initOrUpdateConfusionMatrix();
-    });
+  function setBusy(busy) {
+    analyzeBtn.disabled = busy || (!state.file && !state.sampleId);
+    analyzeBtn.classList.toggle("is-busy", busy);
+    analyzeBtn.querySelector("span").textContent = busy ? "Analyzing…" : "Analyze scan";
+    $("#results").setAttribute("aria-busy", String(busy));
+    $("#lightbox").classList.toggle("is-busy", busy);
   }
 
-  function initOrUpdateConfusionMatrix() {
-    const ctxCm = document.getElementById("chart-confusion-matrix");
-    if (!ctxCm) return;
+  /* ------------------------------------------------------------ result */
+  function renderResult(data) {
+    $("#empty-state").hidden = true;
+    const view = $("#result-view");
+    view.hidden = false;
+    view.classList.remove("is-entering");
+    void view.offsetWidth; // restart the entrance animation
+    view.classList.add("is-entering");
 
-    const selectedModel = cmSelect ? cmSelect.value : "resnet18";
+    renderVerdict(data);
+    renderViewer(data);
+    renderModels(data);
+    renderCategories($("#categories"), data.categories_guide, true);
+    if (window.matchMedia("(max-width: 900px)").matches) $("#verdict").scrollIntoView({ behavior: "smooth", block: "start" });
+  }
 
-    // Realistic normalized confusion matrix data per model
-    const matrices = {
-      custom_cnn: [
-        [310, 52, 18, 20],
-        [44, 325, 15, 16],
-        [10, 12, 372, 6],
-        [18, 14, 8, 360],
-      ],
-      resnet18: [
-        [348, 32, 8, 12],
-        [28, 350, 10, 12],
-        [4, 6, 386, 4],
-        [10, 8, 4, 378],
-      ],
-      mobilenet_v3: [
-        [340, 38, 10, 12],
-        [32, 344, 12, 12],
-        [6, 8, 382, 4],
-        [12, 10, 6, 372],
-      ],
-      vit: [
-        [372, 16, 4, 8],
-        [14, 376, 4, 6],
-        [2, 2, 394, 2],
-        [6, 4, 2, 388],
-      ],
+  function renderVerdict(data) {
+    const verdict = $("#verdict");
+    const top = data.consensus_prediction;
+    verdict.classList.toggle("is-inconclusive", data.inconclusive);
+    verdict.style.setProperty("--verdict-color", data.inconclusive ? "var(--text)" : COLORS[top]);
+
+    $("#verdict-title").textContent = data.consensus_display_name;
+    const level = $("#verdict-level");
+    const levelText = { high: "High confidence", moderate: "Moderate confidence", low: "Low confidence" };
+    level.className = `level level--${data.confidence_level}`;
+    level.textContent = levelText[data.confidence_level] || data.confidence_level;
+
+    $("#verdict-agreement").textContent = `${data.agreement_text} · top class ${pct(data.consensus_confidence)}`;
+    $("#verdict-time").textContent = `${Math.round(data.inference_ms)} ms${data.tta ? " · flip TTA" : ""}`;
+
+    const bar = $("#spectrum-bar");
+    const legend = $("#spectrum-legend");
+    bar.replaceChildren();
+    legend.replaceChildren();
+    const probs = data.ensemble_probabilities;
+    const ordered = [...CLASSES].sort((a, b) => probs[b] - probs[a]);
+    for (const c of ordered) {
+      const seg = el("span", { class: "spectrum__seg", vars: { "--seg": COLORS[c] }, title: `${classLabel(c)} ${pct(probs[c])}` });
+      bar.append(seg);
+      requestAnimationFrame(() => { seg.style.width = `${probs[c]}%`; });
+    }
+    for (const c of CLASSES) {
+      legend.append(el("li", { class: c === top ? "is-top" : "", vars: { "--seg": COLORS[c] } },
+        el("i"), classLabel(c), el("b", { text: pct(probs[c]) })));
+    }
+    $("#spectrum").setAttribute("aria-label",
+      `Ensemble probabilities: ${CLASSES.map((c) => `${classLabel(c)} ${pct(probs[c])}`).join(", ")}. Confidence thresholds at 60 and 85 percent.`);
+
+    $("#verdict-summary").textContent = data.plain_summary;
+    const warnings = $("#verdict-warnings");
+    warnings.replaceChildren(...(data.warnings || []).map((w) =>
+      el("li", {}, el("i", { class: "fa-solid fa-circle-exclamation", "aria-hidden": "true" }), w)));
+    warnings.hidden = !(data.warnings || []).length;
+  }
+
+  function renderViewer(data) {
+    const cam = data.gradcam;
+    $("#viewer-base").src = cam ? cam.input_b64 : data.original_image_b64;
+    const heat = $("#viewer-heat");
+    if (cam) {
+      heat.src = cam.heatmap_b64;
+      heat.hidden = false;
+      $("#viewer-label").textContent = `${shortModel(cam.display_name)} → ${classLabel(cam.target_class)}`;
+    } else {
+      heat.hidden = true;
+      heat.removeAttribute("src");
+      $("#viewer-label").textContent = "no Grad-CAM model available";
+    }
+    $("#viewer-controls").hidden = !cam;
+    updateOpacity();
+  }
+
+  function updateOpacity() {
+    const value = Number($("#opacity").value);
+    $("#viewer-heat").style.opacity = String(value / 100);
+    $("#opacity-out").textContent = `${value}%`;
+  }
+  $("#opacity").addEventListener("input", updateOpacity);
+
+  function renderModels(data) {
+    const list = $("#model-cards");
+    list.replaceChildren();
+    for (const m of data.model_results) {
+      const bars = el("div", { class: "bars" });
+      for (const c of CLASSES) {
+        const fill = el("span", { class: "bar__fill", vars: { "--seg": COLORS[c] } });
+        bars.append(el("div", { class: "bar" },
+          el("span", { text: classLabel(c) }),
+          el("span", { class: "bar__track" }, fill),
+          el("span", { class: "bar__val", text: pct(m.confidences[c]) })));
+        requestAnimationFrame(() => { fill.style.width = `${m.confidences[c]}%`; });
+      }
+      const badges = el("div", { class: "badges" },
+        el("span", { class: "badge", text: m.calibrated ? `calibrated T=${m.temperature}` : "uncalibrated" }),
+        m.legacy_checkpoint ? el("span", { class: "badge", text: "legacy checkpoint" }) : null);
+      list.append(el("section", { class: "model", "aria-label": m.display_name },
+        el("div", { class: "model__top" },
+          el("span", { class: "model__name", text: m.display_name }),
+          el("span", { class: "model__weight", text: `weight ${(m.weight * 100).toFixed(0)}%` })),
+        el("div", { class: "model__call" },
+          el("span", { class: "model__class", vars: { "--seg": COLORS[m.predicted_class] } }, el("i"), classLabel(m.predicted_class)),
+          el("span", { class: "model__conf", text: pct(m.confidence_pct) })),
+        bars,
+        badges));
+    }
+    const note = $("#unavailable-note");
+    const missing = data.unavailable_models || [];
+    note.hidden = !missing.length;
+    note.textContent = missing.length
+      ? `Not included: ${missing.map((m) => `${m.display_name} (${m.reason})`).join("; ")}.`
+      : "";
+  }
+
+  function renderCategories(container, guide, withScores) {
+    container.replaceChildren();
+    for (const cat of guide) {
+      const detected = withScores && cat.is_detected;
+      container.append(el("article", { class: `category${detected ? " is-detected" : ""}`, vars: { "--seg": cat.color } },
+        el("div", { class: "category__head" },
+          el("h3", { class: "category__name", text: cat.display_name }),
+          withScores ? el("span", { class: "category__pct", text: pct(cat.average_confidence_pct) }) : null),
+        el("span", { class: "category__tag", text: detected ? "Best match" : cat.severity }),
+        el("p", {}, el("strong", { text: "What it is: " }), cat.simple_summary),
+        el("p", {}, el("strong", { text: "Details: " }), cat.plain_details),
+        withScores && detected ? el("p", {}, el("strong", { text: "What it means: " }), cat.what_it_means) : null));
+    }
+  }
+
+  /* ------------------------------------------------------------ guide */
+  function renderGuide(force = false) {
+    if (!state.status || (state.rendered.guide && !force)) return;
+    const guide = CLASSES.map((c) => ({ class_key: c, ...(state.status.class_metadata[c] || {}) }));
+    renderCategories($("#guide-categories"), guide, false);
+    state.rendered.guide = true;
+  }
+
+  /* ------------------------------------------------------------ metrics */
+  async function loadMetrics() {
+    try {
+      const data = await fetchJSON("/api/metrics");
+      state.metrics = data.status === "available" ? data.metrics : null;
+      state.histories = data.histories || {};
+      state.meta = data.meta || {};
+      const notice = $("#metrics-notice");
+      notice.hidden = data.status === "available";
+      notice.textContent = data.message || "";
+    } catch (err) {
+      state.metrics = null;
+      $("#metrics-notice").hidden = false;
+      $("#metrics-notice").textContent = `Metrics unavailable: ${err.message}`;
+    }
+    state.rendered.benchmark = state.rendered.errors = state.rendered.training = false;
+    const active = tabs.find((t) => t.getAttribute("aria-selected") === "true");
+    if (active) renderTab(active.id.replace("tab-", ""));
+  }
+  $("#refresh-metrics").addEventListener("click", async () => {
+    await loadMetrics();
+    toast("Benchmark data refreshed");
+  });
+
+  function chartsAvailable(canvasIds) {
+    if (window.Chart) return true;
+    for (const id of canvasIds) {
+      const box = document.getElementById(id).parentElement;
+      box.replaceChildren(el("p", { class: "chart-fallback", text: "Charts could not be loaded." }));
+    }
+    return false;
+  }
+
+  function setChartDefaults() {
+    if (!window.Chart || setChartDefaults.done) return;
+    const C = window.Chart;
+    C.defaults.color = css.getPropertyValue("--text-muted").trim();
+    C.defaults.borderColor = "rgba(236,232,222,0.08)";
+    C.defaults.font.family = "'IBM Plex Mono', ui-monospace, monospace";
+    C.defaults.font.size = 11;
+    C.defaults.plugins.legend.labels.boxWidth = 10;
+    C.defaults.plugins.legend.labels.boxHeight = 10;
+    C.defaults.maintainAspectRatio = false;
+    C.defaults.animation.duration = window.matchMedia("(prefers-reduced-motion: reduce)").matches ? 0 : 600;
+    setChartDefaults.done = true;
+  }
+
+  function drawChart(id, config) {
+    if (state.charts[id]) state.charts[id].destroy();
+    state.charts[id] = new window.Chart(document.getElementById(id), config);
+  }
+
+  /* Tumor-vs-normal view derived from the confusion matrix, so older metric
+   * files (without these fields) still get real sensitivity/specificity. */
+  function withScreening(m) {
+    if (m.tumor_sensitivity != null || !Array.isArray(m.confusion_matrix)) return m;
+    const cm = m.confusion_matrix;
+    const n = CLASSES.indexOf("notumor");
+    let tumors = 0, missed = 0;
+    cm.forEach((row, i) => { if (i !== n) { tumors += row.reduce((a, b) => a + b, 0); missed += row[n]; } });
+    const normals = cm[n].reduce((a, b) => a + b, 0);
+    const falseAlarms = normals - cm[n][n];
+    return {
+      ...m,
+      tumor_sensitivity: tumors ? 1 - missed / tumors : null,
+      tumor_specificity: normals ? 1 - falseAlarms / normals : null,
+      missed_tumors: missed,
+      false_alarms: falseAlarms,
     };
-
-    const matrix = matrices[selectedModel] || matrices.resnet18;
-    const classes = ["Glioma", "Meningioma", "No Tumor", "Pituitary"];
-
-    // Format for Chart.js Bubble / Heatmap or horizontal stacked visualization
-    if (confusionMatrixChart) confusionMatrixChart.destroy();
-
-    confusionMatrixChart = new Chart(ctxCm, {
-      type: "bar",
-      data: {
-        labels: classes,
-        datasets: [
-          {
-            label: "Predicted: Glioma",
-            data: matrix.map((row) => row[0]),
-            backgroundColor: "rgba(244, 63, 94, 0.8)",
-          },
-          {
-            label: "Predicted: Meningioma",
-            data: matrix.map((row) => row[1]),
-            backgroundColor: "rgba(245, 158, 11, 0.8)",
-          },
-          {
-            label: "Predicted: No Tumor",
-            data: matrix.map((row) => row[2]),
-            backgroundColor: "rgba(16, 185, 129, 0.8)",
-          },
-          {
-            label: "Predicted: Pituitary",
-            data: matrix.map((row) => row[3]),
-            backgroundColor: "rgba(59, 130, 246, 0.8)",
-          },
-        ],
-      },
-      options: {
-        responsive: true,
-        maintainAspectRatio: false,
-        plugins: {
-          legend: { labels: { color: "#94a3b8" } },
-          tooltip: {
-            callbacks: {
-              title: (items) => `True Class: ${items[0].label}`,
-            },
-          },
-        },
-        scales: {
-          x: {
-            stacked: true,
-            ticks: { color: "#94a3b8" },
-            grid: { display: false },
-          },
-          y: {
-            stacked: true,
-            ticks: { color: "#94a3b8" },
-            grid: { color: "rgba(255, 255, 255, 0.05)" },
-          },
-        },
-      },
-    });
   }
 
-  // Refresh Button in Benchmark Tab
-  const refreshBtn = document.getElementById("refresh-metrics-btn");
-  if (refreshBtn) {
-    refreshBtn.addEventListener("click", () => {
-      fetchBenchmarkMetrics();
-      fetchSystemStatus();
+  const modelEntries = () => Object.entries(state.metrics || {}).map(([k, m]) => [k, withScreening(m)]);
+  const displayNameFor = (key) => {
+    const fromStatus = state.status && state.status.models.find((m) => m.key === key);
+    return (fromStatus && fromStatus.display_name) || (state.metrics && state.metrics[key] && state.metrics[key].display_name) || key;
+  };
+
+  function renderBenchmark() {
+    if (state.rendered.benchmark) return;
+    const thead = $("#benchmark-table thead");
+    const tbody = $("#benchmark-table tbody");
+    thead.replaceChildren();
+    tbody.replaceChildren();
+    $("#benchmark-stats").replaceChildren();
+    if (!state.metrics) return;
+
+    const entries = modelEntries();
+    const singles = entries.filter(([k]) => k !== "ensemble");
+    const testN = state.meta.num_test_images || (entries[0] && entries[0][1].total_samples);
+    const leak = state.meta.test_leakage && state.meta.test_leakage.overall;
+    $("#benchmark-lede").textContent =
+      `${testN ? `${testN} held-out test images` : "Held-out test set"}${state.meta.tta ? " · flip TTA" : ""}. ` +
+      "Each model is evaluated with its own preprocessing and calibration.";
+
+    // headline stats
+    const best = (key) => {
+      const have = singles.filter(([, m]) => Number.isFinite(m[key]));
+      return have.length ? have.reduce((a, b) => (b[1][key] > a[1][key] ? b : a)) : null;
+    };
+    const card = (entry, key, format) => entry ? [format(entry[1][key]), shortModel(entry[1].display_name)] : ["–", "not in this metrics file"];
+    if (singles.length) {
+      const stats = [
+        ["Best accuracy", ...card(best("test_accuracy_pct"), "test_accuracy_pct", (v) => pct(v))],
+        ["Best macro F1", ...card(best("macro_f1"), "macro_f1", (v) => num(v))],
+        ["Best tumor sensitivity", ...card(best("tumor_sensitivity"), "tumor_sensitivity", (v) => pct(v * 100))],
+        ["Train→test duplicates", leak != null ? pct(leak * 100) : "not audited",
+          leak != null ? "test images with a near-copy in Training/" : "run evaluate.py with Training/ present"],
+      ];
+      for (const [label, value, note] of stats) {
+        $("#benchmark-stats").append(el("div", { class: "stat" },
+          el("div", { class: "stat__label", text: label }), el("div", { class: "stat__value", text: value }),
+          el("div", { class: "stat__note", text: note })));
+      }
+    }
+
+    const columns = [
+      ["Model", null],
+      ["Accuracy", "test_accuracy_pct", 1, (v) => pct(v, 2)],
+      ["Balanced acc.", "balanced_accuracy_pct", 1, (v) => pct(v, 2)],
+      ["Macro F1", "macro_f1", 1, (v) => num(v)],
+      ["ROC-AUC", "auc_macro", 1, (v) => num(v)],
+      ["Log loss", "cross_entropy_loss", -1, (v) => num(v)],
+      ["ECE", "ece", -1, (v) => num(v)],
+      ["Tumor sens.", "tumor_sensitivity", 1, (v) => pct(v * 100)],
+      ["Tumor spec.", "tumor_specificity", 1, (v) => pct(v * 100)],
+      ["Latency", "latency_ms_per_image", -1, (v) => `${v.toFixed(1)} ms`],
+      ["Params", "parameters_total", 0, (v) => `${(v / 1e6).toFixed(2)}M`],
+    ];
+    thead.append(el("tr", {}, columns.map(([label]) => el("th", { scope: "col", text: label }))));
+    const bestValue = {};
+    for (const [, key, dir] of columns) {
+      if (!key || !dir) continue;
+      const values = singles.map(([, m]) => m[key]).filter(Number.isFinite);
+      if (values.length) bestValue[key] = dir > 0 ? Math.max(...values) : Math.min(...values);
+    }
+    for (const [key, m] of entries) {
+      const row = el("tr", { class: key === "ensemble" ? "is-ensemble" : "" });
+      for (const [label, field, dir, format] of columns) {
+        if (!field) { row.append(el("td", { text: m.display_name })); continue; }
+        const value = m[field];
+        const isBest = dir && key !== "ensemble" && Number.isFinite(value) && value === bestValue[field];
+        row.append(el("td", { class: `${isBest ? "is-best" : ""}${Number.isFinite(value) ? "" : " muted-cell"}`,
+          text: Number.isFinite(value) ? format(value) : "–", title: isBest ? `Best ${label}` : null }));
+      }
+      tbody.append(row);
+    }
+
+    if (!chartsAvailable(["chart-accuracy", "chart-f1", "chart-perclass", "chart-screening"])) return;
+    setChartDefaults();
+    const labels = entries.map(([, m]) => shortModel(m.display_name));
+    const ivory = "rgba(236,232,222,0.85)";
+    const muted = "rgba(236,232,222,0.28)";
+    const barOpts = (max) => ({
+      scales: { y: { beginAtZero: true, max, grid: { color: "rgba(236,232,222,0.06)" } }, x: { grid: { display: false } } },
+      plugins: { legend: { position: "bottom" } },
+      datasets: { bar: { borderRadius: 3, maxBarThickness: 28 } },
     });
+    drawChart("chart-accuracy", { type: "bar", data: { labels, datasets: [
+      { label: "Accuracy %", data: entries.map(([, m]) => m.test_accuracy_pct), backgroundColor: ivory },
+      { label: "Error rate %", data: entries.map(([, m]) => m.error_rate_pct), backgroundColor: COLORS.glioma },
+    ] }, options: barOpts(100) });
+    drawChart("chart-f1", { type: "bar", data: { labels, datasets: [
+      { label: "Macro F1", data: entries.map(([, m]) => m.macro_f1), backgroundColor: ivory },
+      { label: "ROC-AUC", data: entries.map(([, m]) => m.auc_macro), backgroundColor: muted },
+    ] }, options: barOpts(1) });
+    drawChart("chart-perclass", { type: "bar", data: { labels, datasets: CLASSES.map((c) => ({
+      label: classLabel(c), data: entries.map(([, m]) => m[`${c}_f1`]), backgroundColor: COLORS[c],
+    })) }, options: barOpts(1) });
+    drawChart("chart-screening", { type: "bar", data: { labels, datasets: [
+      { label: "Tumor sensitivity", data: entries.map(([, m]) => (m.tumor_sensitivity ?? NaN) * 100), backgroundColor: ivory },
+      { label: "Specificity", data: entries.map(([, m]) => (m.tumor_specificity ?? NaN) * 100), backgroundColor: COLORS.notumor },
+    ] }, options: barOpts(100) });
+    state.rendered.benchmark = true;
   }
 
-  // Bootstrap initial data
-  fetchSystemStatus();
-  fetchSamples();
-  fetchBenchmarkMetrics();
-});
+  /* ------------------------------------------------------------ errors */
+  const cmSelect = $("#cm-model");
+  cmSelect.addEventListener("change", () => { state.rendered.errors = false; renderErrors(); });
+
+  function renderErrors() {
+    if (state.rendered.errors) return;
+    const box = $("#confusion-matrix");
+    const insights = $("#error-insights");
+    box.replaceChildren();
+    insights.replaceChildren();
+    const entries = modelEntries();
+    if (!entries.length) {
+      box.append(el("p", { class: "hint", text: "No evaluation results yet. Run python evaluate.py." }));
+      return;
+    }
+    if (cmSelect.options.length !== entries.length) {
+      const previous = cmSelect.value;
+      cmSelect.replaceChildren(...entries.map(([k, m]) => el("option", { value: k, text: m.display_name })));
+      const preferred = entries.find(([k]) => k === previous) || entries.find(([k]) => k === "ensemble") || entries[0];
+      cmSelect.value = preferred[0];
+    }
+    const m = withScreening(state.metrics[cmSelect.value]);
+    const cm = m.confusion_matrix;
+
+    box.append(el("div", { class: "cm__axis", text: "true ↓ / predicted →" }));
+    for (const c of CLASSES) box.append(el("div", { class: "cm__colhead", vars: { "--seg": COLORS[c] } }, el("i"), classLabel(c)));
+    cm.forEach((row, i) => {
+      const total = row.reduce((a, b) => a + b, 0) || 1;
+      box.append(el("div", { class: "cm__rowhead", vars: { "--seg": COLORS[CLASSES[i]] } }, el("i"), classLabel(CLASSES[i])));
+      row.forEach((count, j) => {
+        const share = count / total;
+        const diag = i === j;
+        const intensity = diag ? share : Math.min(1, share * 2.5); // make small error rates visible
+        box.append(el("div", {
+          class: `cm__cell ${diag ? "is-diag" : "is-off"}${intensity > 0.45 ? " is-strong" : ""}`,
+          vars: { "--v": intensity.toFixed(3) }, role: "cell",
+          "aria-label": `True ${classLabel(CLASSES[i])}, predicted ${classLabel(CLASSES[j])}: ${count} of ${total} (${pct(share * 100)})`,
+        }, el("span", { class: "cm__pct", text: pct(share * 100, share < 0.1 && share > 0 ? 1 : 0) }), el("span", { class: "cm__n", text: `${count}/${total}` })));
+      });
+    });
+
+    // data-driven insights for the selected model
+    let worst = null;
+    cm.forEach((row, i) => row.forEach((count, j) => {
+      if (i !== j && (!worst || count > worst.count)) worst = { i, j, count, total: row.reduce((a, b) => a + b, 0) };
+    }));
+    const missRates = CLASSES.map((c, i) => ({ c, miss: 1 - cm[i][i] / (cm[i].reduce((a, b) => a + b, 0) || 1) }));
+    const hardest = missRates.reduce((a, b) => (b.miss > a.miss ? b : a));
+    const items = [
+      ["Most common mistake", worst && worst.count ? `${classLabel(CLASSES[worst.i])} → ${classLabel(CLASSES[worst.j])}` : "None",
+        worst && worst.count ? `${worst.count} of ${worst.total} ${classLabel(CLASSES[worst.i]).toLowerCase()} scans (${pct(100 * worst.count / worst.total)})` : "No off-diagonal errors."],
+      ["Hardest class", classLabel(hardest.c), `${pct(hardest.miss * 100)} of these scans are missed (recall ${pct((1 - hardest.miss) * 100)}).`],
+    ];
+    if (m.missed_tumors != null) {
+      items.push(["Missed tumors", String(m.missed_tumors), `tumor scans labelled "no tumor" · sensitivity ${pct(m.tumor_sensitivity * 100)}`]);
+      items.push(["False alarms", String(m.false_alarms), `normal scans labelled as a tumor · specificity ${pct(m.tumor_specificity * 100)}`]);
+    }
+    if (Number.isFinite(m.ece)) {
+      items.push(["Calibration error", num(m.ece), m.ece_uncalibrated != null
+        ? `${num(m.ece_uncalibrated)} before temperature scaling`
+        : "gap between displayed confidence and accuracy"]);
+    }
+    for (const [title, value, note] of items) insights.append(el("li", {}, el("span", { text: title }), el("b", { text: value }), el("span", { text: note })));
+    state.rendered.errors = true;
+  }
+
+  /* ------------------------------------------------------------ training */
+  /* Heuristic, shown as such in the UI. Validation can look perfect when the
+   * split leaks near-duplicates, so the drop from validation to the held-out
+   * test set is part of the diagnosis. */
+  function diagnose(h, test) {
+    const best = (h.best_epoch || h.val_loss.indexOf(Math.min(...h.val_loss)) + 1) - 1;
+    const trainAcc = h.train_acc[h.train_acc.length - 1];
+    const gap = h.train_acc[best] - h.val_acc[best];
+    const valRise = h.val_loss[h.val_loss.length - 1] - Math.min(...h.val_loss);
+    const testDrop = test ? h.val_acc[best] - test.test_accuracy_pct : null;
+    const lossRatio = test && h.val_loss[best] > 0 ? test.cross_entropy_loss / h.val_loss[best] : null;
+    const notes = [];
+    if (testDrop != null && testDrop > 3) notes.push(`accuracy falls ${testDrop.toFixed(1)} pts from validation to test`);
+    if (lossRatio != null && lossRatio > 2) notes.push(`test loss is ${lossRatio.toFixed(1)}× the validation loss`);
+    let kind = ["ok", "Healthy"];
+    if (trainAcc < 92) kind = ["under", "Under-fitting"];
+    else if (gap > 4 || valRise > 0.08 || notes.length) kind = ["over", notes.length ? "Over-fitting (hidden by validation)" : "Over-fitting risk"];
+    return { kind: kind[0], label: kind[1], gap, best, testDrop, notes };
+  }
+
+  function renderTraining() {
+    if (state.rendered.training) return;
+    const grid = $("#training-grid");
+    grid.replaceChildren();
+    const entries = Object.entries(state.histories || {}).filter(([, h]) => h && Array.isArray(h.train_loss) && h.train_loss.length);
+    const notice = $("#training-notice");
+    notice.hidden = entries.length > 0;
+    notice.textContent = "No training histories found in results/. Train a model with python train.py.";
+    if (!entries.length) return;
+    const canDraw = !!window.Chart;
+    setChartDefaults();
+
+    for (const [key, h] of entries) {
+      const test = state.metrics && state.metrics[key];
+      const d = diagnose(h, test);
+      const name = h.display_name && h.display_name !== key ? h.display_name : displayNameFor(key);
+      const canvasId = `train-${key}`;
+      grid.append(el("article", { class: "panel train-card" },
+        el("div", { class: "train-card__head" },
+          el("h2", { text: name }),
+          el("span", { class: `diagnosis diagnosis--${d.kind}`, text: d.label })),
+        el("div", { class: "train-card__facts" },
+          el("div", { class: "fact" }, el("span", { text: "best epoch" }), el("b", { text: `${d.best + 1} / ${h.train_loss.length}` })),
+          el("div", { class: "fact" }, el("span", { text: "train / val acc" }), el("b", { text: `${h.train_acc[d.best].toFixed(1)} / ${h.val_acc[d.best].toFixed(1)}` })),
+          el("div", { class: "fact" }, el("span", { text: "train−val gap" }), el("b", { text: `${d.gap >= 0 ? "+" : ""}${d.gap.toFixed(1)} pts` })),
+          el("div", { class: "fact" }, el("span", { text: "val → test acc" }), el("b", { text: test ? `${h.val_acc[d.best].toFixed(1)} → ${test.test_accuracy_pct.toFixed(1)}` : "–" }))),
+        d.notes.length ? el("p", { class: "train-card__note", text: `Warning: ${d.notes.join("; ")}.` }) : null,
+        el("div", { class: "chart__canvas" }, canDraw
+          ? el("canvas", { id: canvasId, role: "img", "aria-label": `Training and validation loss for ${h.display_name || key}` })
+          : el("p", { class: "chart-fallback", text: "Charts could not be loaded." }))));
+      if (!canDraw) continue;
+      const epochs = h.train_loss.map((_, i) => i + 1);
+      drawChart(canvasId, {
+        type: "line",
+        data: { labels: epochs, datasets: [
+          { label: "train loss", data: h.train_loss, borderColor: "rgba(236,232,222,0.9)", backgroundColor: "rgba(236,232,222,0.9)", tension: 0.25, pointRadius: 2, yAxisID: "y" },
+          { label: "val loss", data: h.val_loss, borderColor: COLORS.glioma, backgroundColor: COLORS.glioma, tension: 0.25, pointRadius: 2, yAxisID: "y" },
+          { label: "train acc %", data: h.train_acc, borderColor: "rgba(236,232,222,0.45)", borderDash: [4, 4], pointRadius: 0, tension: 0.25, yAxisID: "y1" },
+          { label: "val acc %", data: h.val_acc, borderColor: COLORS.pituitary, borderDash: [4, 4], pointRadius: 0, tension: 0.25, yAxisID: "y1" },
+        ] },
+        options: {
+          interaction: { mode: "index", intersect: false },
+          plugins: { legend: { position: "bottom" } },
+          scales: {
+            x: { title: { display: true, text: "epoch" }, grid: { display: false } },
+            y: { position: "left", title: { display: true, text: "loss" }, beginAtZero: true, grid: { color: "rgba(236,232,222,0.06)" } },
+            y1: { position: "right", title: { display: true, text: "accuracy %" }, min: 0, max: 100, grid: { display: false } },
+          },
+        },
+      });
+    }
+    state.rendered.training = true;
+  }
+
+  /* ------------------------------------------------------------ boot */
+  const initial = tabs.find((t) => `#${t.id.replace("tab-", "")}` === location.hash);
+  if (initial) selectTab(initial, { updateHash: false });
+  loadStatus();
+  loadSamples();
+  loadMetrics();
+})();
