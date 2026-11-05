@@ -23,7 +23,7 @@ import torch
 import torch.nn.functional as F
 
 from src.config import BATCH_SIZE, CLASS_NAMES, MODELS_DIR, RESULTS_DIR, TEST_DIR, TRAIN_DIR, ensure_output_dirs, get_device
-from src.data import MRIDataset, audit_leakage, compute_image_hashes, get_eval_tensorize, make_loader, near_duplicate_pairs, scan_image_folder
+from src.data import MRIDataset, compute_image_hashes, get_eval_tensorize, make_loader, near_duplicate_pairs, scan_image_folder
 from src.ensemble import reliability_weight
 from src.metrics import collect_logits, compute_comprehensive_metrics, measure_latency
 from src.models import MODEL_REGISTRY, count_parameters, load_model_from_checkpoint
