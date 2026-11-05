@@ -1,0 +1,41 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: requirements*.txt
+
+      - name: Install CPU-only PyTorch
+        run: pip install --index-url https://download.pytorch.org/whl/cpu "torch>=2.6,<3" "torchvision>=0.21,<1"
+
+      - name: Install dependencies
+        run: pip install -r requirements-dev.txt
+
+      - name: Byte-compile
+        run: python -m compileall -q src scripts tests train.py evaluate.py predict.py compare.py server.py
+
+      - name: Check frontend script
+        run: node --check frontend/app.js
+
+      - name: Tests
+        run: pytest
