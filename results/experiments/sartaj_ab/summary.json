@@ -1,0 +1,629 @@
+{
+  "dataset": "SARTAJ brain-tumor-classification-dataset (2870 train / 394 test)",
+  "init": "identical ImageNet weights for ResNet-18 (timm RSB-A1, sha256 d63eafa0...)",
+  "notes": {
+    "custom_cnn.original": "original code, --epochs 40, its early stopping ended at epoch 18",
+    "custom_cnn.original_12ep": "original code, --epochs 12",
+    "custom_cnn.new": "new pipeline, recipe default 40 epochs",
+    "custom_cnn.new_12ep": "new pipeline cut to 12 epochs (too short for a scratch CNN)",
+    "temperature_policy": "shipped policy clamps T to >= 1; ECE/log-loss of the new models are reported at T=1"
+  },
+  "models": {
+    "resnet18": {
+      "original": {
+        "epochs_run": 15,
+        "best_epoch": 14,
+        "train_acc_at_best": 98.77,
+        "val_acc_at_best": 95.58,
+        "val_loss_at_best": 0.1332,
+        "validation_split": "random_split (near-duplicates leak)",
+        "test": {
+          "total_samples": 394,
+          "test_accuracy_pct": 70.05,
+          "balanced_accuracy_pct": 67.75,
+          "macro_f1": 0.6546,
+          "auc_macro": 0.9207,
+          "cross_entropy_loss": 1.4295,
+          "ece": 0.2128,
+          "tumor_sensitivity": 0.7716,
+          "tumor_specificity": 0.9905,
+          "missed_tumors": 66,
+          "temperature": 1.0,
+          "glioma_recall": 0.24,
+          "per_class_recall": {
+            "glioma": 0.24,
+            "meningioma": 0.9391,
+            "notumor": 0.9905,
+            "pituitary": 0.5405
+          },
+          "confusion_matrix": [
+            [
+              24,
+              42,
+              31,
+              3
+            ],
+            [
+              0,
+              108,
+              6,
+              1
+            ],
+            [
+              0,
+              1,
+              104,
+              0
+            ],
+            [
+              0,
+              5,
+              29,
+              40
+            ]
+          ]
+        },
+        "leakage_free_test": {
+          "total_samples": 124,
+          "test_accuracy_pct": 20.97,
+          "balanced_accuracy_pct": 38.13,
+          "macro_f1": 0.1962,
+          "auc_macro": NaN,
+          "cross_entropy_loss": 3.9709,
+          "ece": 0.6183,
+          "tumor_sensitivity": 0.5645,
+          "tumor_specificity": NaN,
+          "missed_tumors": 54,
+          "temperature": 1.0,
+          "glioma_recall": 0.0909,
+          "per_class_recall": {
+            "glioma": 0.0909,
+            "meningioma": 0.6667,
+            "notumor": 0.0,
+            "pituitary": 0.3864
+          },
+          "confusion_matrix": [
+            [
+              7,
+              36,
+              31,
+              3
+            ],
+            [
+              0,
+              2,
+              1,
+              0
+            ],
+            [
+              0,
+              0,
+              0,
+              0
+            ],
+            [
+              0,
+              5,
+              22,
+              17
+            ]
+          ]
+        },
+        "val_to_test_drop_pts": 25.53
+      },
+      "new": {
+        "epochs_run": 15,
+        "best_epoch": 14,
+        "train_acc_at_best": 93.41,
+        "val_acc_at_best": 91.71,
+        "val_loss_at_best": 0.2692,
+        "validation_split": "near-duplicate-grouped stratified split",
+        "test": {
+          "total_samples": 394,
+          "test_accuracy_pct": 73.1,
+          "balanced_accuracy_pct": 71.52,
+          "macro_f1": 0.7198,
+          "auc_macro": 0.912,
+          "cross_entropy_loss": 0.7999,
+          "ece": 0.083,
+          "tumor_sensitivity": 0.8235,
+          "tumor_specificity": 0.9429,
+          "missed_tumors": 51,
+          "temperature": 1.0,
+          "fitted_temperature_before_policy": 0.7066,
+          "glioma_recall": 0.48,
+          "per_class_recall": {
+            "glioma": 0.48,
+            "meningioma": 0.8435,
+            "notumor": 0.9429,
+            "pituitary": 0.5946
+          },
+          "confusion_matrix": [
+            [
+              48,
+              31,
+              19,
+              2
+            ],
+            [
+              6,
+              97,
+              12,
+              0
+            ],
+            [
+              3,
+              3,
+              99,
+              0
+            ],
+            [
+              0,
+              10,
+              20,
+              44
+            ]
+          ]
+        },
+        "leakage_free_test": {
+          "total_samples": 124,
+          "test_accuracy_pct": 46.77,
+          "balanced_accuracy_pct": 55.23,
+          "macro_f1": 0.3503,
+          "auc_macro": NaN,
+          "cross_entropy_loss": 1.6003,
+          "ece": 0.2714,
+          "tumor_sensitivity": 0.7258,
+          "tumor_specificity": NaN,
+          "missed_tumors": 34,
+          "temperature": 1.0,
+          "fitted_temperature_before_policy": 0.7066,
+          "glioma_recall": 0.3766,
+          "per_class_recall": {
+            "glioma": 0.3766,
+            "meningioma": 0.6667,
+            "notumor": 0.0,
+            "pituitary": 0.6136
+          },
+          "confusion_matrix": [
+            [
+              29,
+              27,
+              19,
+              2
+            ],
+            [
+              0,
+              2,
+              1,
+              0
+            ],
+            [
+              0,
+              0,
+              0,
+              0
+            ],
+            [
+              0,
+              3,
+              14,
+              27
+            ]
+          ]
+        },
+        "val_to_test_drop_pts": 18.61
+      }
+    },
+    "custom_cnn": {
+      "original_12ep": {
+        "epochs_run": 12,
+        "best_epoch": 10,
+        "train_acc_at_best": 90.08,
+        "val_acc_at_best": 89.53,
+        "val_loss_at_best": 0.2933,
+        "validation_split": "near-duplicate-grouped stratified split",
+        "test": {
+          "total_samples": 394,
+          "test_accuracy_pct": 67.01,
+          "balanced_accuracy_pct": 66.4,
+          "macro_f1": 0.6247,
+          "auc_macro": 0.8534,
+          "cross_entropy_loss": 1.3472,
+          "ece": 0.1231,
+          "tumor_sensitivity": 0.7993,
+          "tumor_specificity": 0.9429,
+          "missed_tumors": 58,
+          "temperature": 1.0,
+          "glioma_recall": 0.14,
+          "per_class_recall": {
+            "glioma": 0.14,
+            "meningioma": 0.8435,
+            "notumor": 0.9429,
+            "pituitary": 0.7297
+          },
+          "confusion_matrix": [
+            [
+              14,
+              39,
+              42,
+              5
+            ],
+            [
+              1,
+              97,
+              14,
+              3
+            ],
+            [
+              0,
+              6,
+              99,
+              0
+            ],
+            [
+              0,
+              18,
+              2,
+              54
+            ]
+          ]
+        },
+        "leakage_free_test": {
+          "total_samples": 124,
+          "test_accuracy_pct": 33.06,
+          "balanced_accuracy_pct": 41.09,
+          "macro_f1": 0.2412,
+          "auc_macro": NaN,
+          "cross_entropy_loss": 3.2427,
+          "ece": 0.4259,
+          "tumor_sensitivity": 0.6452,
+          "tumor_specificity": NaN,
+          "missed_tumors": 44,
+          "temperature": 1.0,
+          "glioma_recall": 0.013,
+          "per_class_recall": {
+            "glioma": 0.013,
+            "meningioma": 0.3333,
+            "notumor": 0.0,
+            "pituitary": 0.8864
+          },
+          "confusion_matrix": [
+            [
+              1,
+              29,
+              42,
+              5
+            ],
+            [
+              0,
+              1,
+              2,
+              0
+            ],
+            [
+              0,
+              0,
+              0,
+              0
+            ],
+            [
+              0,
+              5,
+              0,
+              39
+            ]
+          ]
+        },
+        "val_to_test_drop_pts": 22.52
+      },
+      "original": {
+        "epochs_run": 18,
+        "best_epoch": 13,
+        "train_acc_at_best": 91.97,
+        "val_acc_at_best": 91.63,
+        "val_loss_at_best": 0.2815,
+        "validation_split": "random_split (near-duplicates leak)",
+        "test": {
+          "total_samples": 394,
+          "test_accuracy_pct": 61.17,
+          "balanced_accuracy_pct": 60.27,
+          "macro_f1": 0.5723,
+          "auc_macro": 0.8526,
+          "cross_entropy_loss": 1.6361,
+          "ece": 0.2081,
+          "tumor_sensitivity": 0.6367,
+          "tumor_specificity": 1.0,
+          "missed_tumors": 105,
+          "temperature": 1.0,
+          "glioma_recall": 0.16,
+          "per_class_recall": {
+            "glioma": 0.16,
+            "meningioma": 0.6696,
+            "notumor": 1.0,
+            "pituitary": 0.5811
+          },
+          "confusion_matrix": [
+            [
+              16,
+              22,
+              57,
+              5
+            ],
+            [
+              0,
+              77,
+              33,
+              5
+            ],
+            [
+              0,
+              0,
+              105,
+              0
+            ],
+            [
+              0,
+              16,
+              15,
+              43
+            ]
+          ]
+        },
+        "leakage_free_test": {
+          "total_samples": 124,
+          "test_accuracy_pct": 22.58,
+          "balanced_accuracy_pct": 31.24,
+          "macro_f1": 0.2006,
+          "auc_macro": NaN,
+          "cross_entropy_loss": 3.9615,
+          "ece": 0.5551,
+          "tumor_sensitivity": 0.4274,
+          "tumor_specificity": NaN,
+          "missed_tumors": 71,
+          "temperature": 1.0,
+          "glioma_recall": 0.013,
+          "per_class_recall": {
+            "glioma": 0.013,
+            "meningioma": 0.3333,
+            "notumor": 0.0,
+            "pituitary": 0.5909
+          },
+          "confusion_matrix": [
+            [
+              1,
+              15,
+              56,
+              5
+            ],
+            [
+              0,
+              1,
+              2,
+              0
+            ],
+            [
+              0,
+              0,
+              0,
+              0
+            ],
+            [
+              0,
+              5,
+              13,
+              26
+            ]
+          ]
+        },
+        "val_to_test_drop_pts": 30.46
+      },
+      "new_12ep": {
+        "epochs_run": 12,
+        "best_epoch": 12,
+        "train_acc_at_best": 80.16,
+        "val_acc_at_best": 81.22,
+        "val_loss_at_best": 0.5228,
+        "validation_split": "near-duplicate-grouped stratified split",
+        "test": {
+          "total_samples": 394,
+          "test_accuracy_pct": 46.45,
+          "balanced_accuracy_pct": 45.6,
+          "macro_f1": 0.4558,
+          "auc_macro": 0.7416,
+          "cross_entropy_loss": 1.3248,
+          "ece": 0.1875,
+          "tumor_sensitivity": 0.519,
+          "tumor_specificity": 0.7905,
+          "missed_tumors": 139,
+          "temperature": 1.0,
+          "fitted_temperature_before_policy": 0.5893,
+          "glioma_recall": 0.26,
+          "per_class_recall": {
+            "glioma": 0.26,
+            "meningioma": 0.4087,
+            "notumor": 0.7905,
+            "pituitary": 0.3649
+          },
+          "confusion_matrix": [
+            [
+              26,
+              23,
+              47,
+              4
+            ],
+            [
+              2,
+              47,
+              65,
+              1
+            ],
+            [
+              5,
+              17,
+              83,
+              0
+            ],
+            [
+              12,
+              8,
+              27,
+              27
+            ]
+          ]
+        },
+        "leakage_free_test": {
+          "total_samples": 124,
+          "test_accuracy_pct": 24.19,
+          "balanced_accuracy_pct": 19.16,
+          "macro_f1": 0.1979,
+          "auc_macro": NaN,
+          "cross_entropy_loss": 2.2115,
+          "ece": 0.4192,
+          "tumor_sensitivity": 0.5242,
+          "tumor_specificity": NaN,
+          "missed_tumors": 59,
+          "temperature": 1.0,
+          "fitted_temperature_before_policy": 0.5893,
+          "glioma_recall": 0.1429,
+          "per_class_recall": {
+            "glioma": 0.1429,
+            "meningioma": 0.0,
+            "notumor": 0.0,
+            "pituitary": 0.4318
+          },
+          "confusion_matrix": [
+            [
+              11,
+              19,
+              43,
+              4
+            ],
+            [
+              0,
+              0,
+              3,
+              0
+            ],
+            [
+              0,
+              0,
+              0,
+              0
+            ],
+            [
+              10,
+              2,
+              13,
+              19
+            ]
+          ]
+        },
+        "val_to_test_drop_pts": 34.77
+      },
+      "new": {
+        "epochs_run": 40,
+        "best_epoch": 39,
+        "train_acc_at_best": 94.43,
+        "val_acc_at_best": 93.66,
+        "val_loss_at_best": 0.2264,
+        "validation_split": "near-duplicate-grouped stratified split",
+        "test": {
+          "total_samples": 394,
+          "test_accuracy_pct": 67.77,
+          "balanced_accuracy_pct": 65.66,
+          "macro_f1": 0.6542,
+          "auc_macro": 0.9066,
+          "cross_entropy_loss": 0.8756,
+          "ece": 0.1121,
+          "tumor_sensitivity": 0.7405,
+          "tumor_specificity": 0.981,
+          "missed_tumors": 75,
+          "temperature": 1.0,
+          "fitted_temperature_before_policy": 0.5561,
+          "glioma_recall": 0.39,
+          "per_class_recall": {
+            "glioma": 0.39,
+            "meningioma": 0.7826,
+            "notumor": 0.981,
+            "pituitary": 0.473
+          },
+          "confusion_matrix": [
+            [
+              39,
+              25,
+              34,
+              2
+            ],
+            [
+              3,
+              90,
+              21,
+              1
+            ],
+            [
+              0,
+              2,
+              103,
+              0
+            ],
+            [
+              3,
+              16,
+              20,
+              35
+            ]
+          ]
+        },
+        "leakage_free_test": {
+          "total_samples": 124,
+          "test_accuracy_pct": 33.06,
+          "balanced_accuracy_pct": 45.92,
+          "macro_f1": 0.2792,
+          "auc_macro": NaN,
+          "cross_entropy_loss": 1.8874,
+          "ece": 0.3982,
+          "tumor_sensitivity": 0.5968,
+          "tumor_specificity": NaN,
+          "missed_tumors": 50,
+          "temperature": 1.0,
+          "fitted_temperature_before_policy": 0.5561,
+          "glioma_recall": 0.2338,
+          "per_class_recall": {
+            "glioma": 0.2338,
+            "meningioma": 0.6667,
+            "notumor": 0.0,
+            "pituitary": 0.4773
+          },
+          "confusion_matrix": [
+            [
+              18,
+              23,
+              34,
+              2
+            ],
+            [
+              0,
+              2,
+              1,
+              0
+            ],
+            [
+              0,
+              0,
+              0,
+              0
+            ],
+            [
+              0,
+              8,
+              15,
+              21
+            ]
+          ]
+        },
+        "val_to_test_drop_pts": 25.89
+      }
+    }
+  }
+}

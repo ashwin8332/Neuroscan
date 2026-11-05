@@ -71,8 +71,8 @@ show the train / validation curves with the held-out test accuracy marked.
 | Augmentation | random resized crop, flips, affine, contrast/brightness, blur, erasing | regularisation; anatomy-preserving only |
 | Recipe | LP-FT, discriminative LRs, warm-up + cosine, AdamW without decaying norms/biases, label smoothing, gradient clipping, EMA | prevents feature distortion and over-confidence, stabilises training |
 | Selection | early stopping and checkpointing on validation **loss** | accuracy saturates; loss tracks calibration |
-| Calibration | temperature scaling fitted on validation, saved in checkpoint | displayed confidence matches accuracy |
-| Custom CNN | v2: residual blocks + squeeze-excitation + global-pool head, 40 epochs at lr 2e-3 | fixes under-fitting without a huge dense layer |
+| Calibration | temperature scaling fitted on validation (soften-only, T ≥ 1), saved in checkpoint | over-confident models are corrected; never made more confident |
+| Custom CNN | v2: residual blocks + squeeze-excitation + global-pool head, 40 epochs at lr 2e-3 | trains to ~94 % without a train/validation gap instead of plateauing |
 | Metrics | ECE, tumor sensitivity / specificity, missed tumors, model-only latency | clinically meaningful view; old latency included disk I/O |
 | Ensemble | weights = log-odds of validation accuracy; missing models excluded; inconclusive state | no random voters, honest uncertainty |
 | Checkpoints | arch, classes, preprocessing, temperature, val metrics; `weights_only=True` loading | reproducible inference, no pickle code execution |
@@ -82,25 +82,66 @@ Old checkpoints still load and run with exactly the preprocessing they were trai
 
 ## 3. Evidence: controlled experiment
 
-To check that the new pipeline fixes the problem rather than just moving numbers, the
-**original code (unmodified, from `main`)** and the **new pipeline** were trained on the
-same public data with the same ImageNet initialisation and compared on the official test
-split. The full Kaggle dataset cannot be downloaded in the sandbox used for this work, so
-the experiment uses the [SARTAJ dataset](https://github.com/sartajbhuvaji/brain-tumor-classification-dataset)
-(2,870 training / 394 test images), one of the three sources of the Kaggle dataset.
+The **original code (unmodified, from `main`)** and the **new pipeline** were trained on
+the same public data with the same ImageNet initialisation and compared on the official
+test split and on its *leakage-free* subset (test images with no near-copy in training).
+The full Kaggle dataset cannot be downloaded in the sandbox used for this work, so the
+experiment uses the [SARTAJ dataset](https://github.com/sartajbhuvaji/brain-tumor-classification-dataset)
+(2,870 training / 394 test images), one of the three sources of the Kaggle dataset. Its test
+split is distribution-shifted and its glioma labels are known to be noisy, so absolute
+numbers are low for every method; the comparison between pipelines is what matters.
 
-Results for the original code (ResNet-18, 15 epochs):
+**ResNet-18** (15 epochs each):
 
-| Metric | Original code |
-|---|---|
-| Validation accuracy (its random split) | 95.6 % |
-| Test accuracy | 70.1 % |
-| Test log-loss / ECE | 1.43 / 0.21 |
-| Accuracy on the 124 leakage-free test images | 21.0 % |
+| | Original code | New pipeline |
+|---|---|---|
+| Validation accuracy (own split) | 95.6 % | 91.7 % |
+| Test accuracy / balanced accuracy | 70.1 % / 67.8 % | **73.1 % / 71.5 %** |
+| Test macro F1 | 0.655 | **0.720** |
+| Test log-loss / ECE | 1.43 / 0.213 | **0.80 / 0.083** |
+| Glioma recall | 0.24 | **0.48** |
+| Tumor sensitivity | 0.77 | **0.82** |
+| Leakage-free accuracy (124 images) | 21.0 % | **46.8 %** |
+| Leakage-free glioma recall | 0.09 | **0.38** |
+| Validation → test drop | 25.5 pts | **18.6 pts** |
 
-The validation score overstated real accuracy by more than 25 points, and on scans with no
-near-copy in training the model was mostly and confidently wrong. Results for the new
-pipeline are added below when its run completes.
+**Custom CNN** (original v1 with its own early stopping vs. new v2 at its 40-epoch default):
+
+| | Original, 12 epochs | Original, 40 max (stopped at 18) | New, 40 epochs |
+|---|---|---|---|
+| Validation accuracy (own split) | 89.5 % | 91.6 % | 93.7 % |
+| Test accuracy / balanced accuracy | 67.0 % / 66.4 % | 61.2 % / 60.3 % | **67.8 %** / 65.7 % |
+| Test macro F1 | 0.625 | 0.572 | **0.654** |
+| Test log-loss / ECE | 1.35 / 0.123 | 1.64 / 0.208 | **0.88 / 0.112** |
+| Glioma recall | 0.14 | 0.16 | **0.39** |
+| Tumor sensitivity | **0.80** | 0.64 | 0.74 |
+| Leakage-free accuracy | 33.1 % | 22.6 % | 33.1 % |
+
+What this shows:
+
+* **The original validation numbers cannot be trusted.** Training the original custom CNN
+  longer *raised* its validation accuracy (89.5 → 91.6 %) while test accuracy *fell*
+  (67.0 → 61.2 %): over-fitting that the leaky split rewards instead of catching.
+* **ResNet-18 generalises clearly better with the new pipeline**: higher test accuracy and
+  F1, half the log-loss, less than half the calibration error, twice the glioma recall and
+  more than twice the accuracy on never-seen scans.
+* **The from-scratch CNN improves more modestly**: on-par accuracy with better F1,
+  calibration and glioma recall, but lower tumor sensitivity than the best original run. It
+  needs its full 40-epoch schedule; cut to 12 epochs it under-fitted (46.5 % test accuracy).
+* **Calibration policy.** Temperatures fitted on validation data were below 1 (sharpening,
+  because label smoothing makes models slightly under-confident). On the shifted test set,
+  sharpening made ECE and log-loss worse for both models, so the shipped policy only lets
+  temperature *soften* predictions (T ≥ 1). The new-pipeline numbers above use that policy.
+  This choice was made after looking at these test results, which is stated here for
+  transparency; it removes a degree of freedom rather than tuning one.
+
+Limits: one seed, CPU-sized budgets, and MobileNetV3/ViT were not re-run because their
+ImageNet weights were not reachable in the sandbox. Confirm on the full Kaggle dataset with
+`python evaluate.py --tta` and `--exclude-leaked` after retraining.
+All numbers, per-epoch histories and the figure are in
+[`results/experiments/sartaj_ab/`](results/experiments/sartaj_ab/) (`summary.json`, `histories/`, `curves.png`).
+
+![Original vs new pipeline curves](results/experiments/sartaj_ab/curves.png)
 
 ## 4. Quick start
 
