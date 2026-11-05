@@ -22,11 +22,11 @@ def test_temperature_scaling_fixes_overconfidence():
     assert expected_calibration_error(labels.numpy(), probs_cal) < expected_calibration_error(labels.numpy(), probs)
 
 
-def test_temperature_is_clamped_for_separable_data():
-    """Perfectly separated validation data pushes T towards 0; it must be clamped."""
+def test_temperature_never_sharpens():
+    """Under-confident (or separable) validation logits would ask for T < 1; policy clamps to 1."""
     labels = torch.tensor([0, 1, 2, 3] * 10)
     logits = torch.nn.functional.one_hot(labels, 4).float() * 2
-    assert fit_temperature(logits, labels) == pytest.approx(0.5)
+    assert fit_temperature(logits, labels) == pytest.approx(1.0)
 
 
 def test_reliability_weight_orders_models_and_prefers_validation():

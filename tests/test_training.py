@@ -35,7 +35,7 @@ def test_train_model_writes_calibrated_checkpoint_and_history(synthetic_dataset,
     assert 1 <= result.best_epoch <= 2
     loaded, info = load_model_from_checkpoint("custom_cnn", ckpt, torch.device("cpu"))
     assert info.preprocess == preprocess and info.arch == "custom_cnn_v2"
-    assert 0.5 <= info.temperature <= 10.0
+    assert 1.0 <= info.temperature <= 10.0
     assert {"val_acc", "val_ece", "val_ece_calibrated", "best_epoch"} <= set(info.val_metrics)
     assert "interim" not in info.val_metrics  # the calibrated final checkpoint replaced the interim one
     with torch.no_grad():

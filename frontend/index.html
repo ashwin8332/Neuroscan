@@ -244,7 +244,7 @@
           <h2>How a finding is produced</h2>
           <ol>
             <li>The slice is cropped to the head and padded to a square, exactly as during training.</li>
-            <li>Each trained model scores the slice and its mirror image; scores are calibrated so that "80%" means right about 80% of the time on validation data.</li>
+            <li>Each trained model scores the slice and its mirror image. Over-confident models are calibrated on validation data so their scores are not inflated; no model is ever made more confident than it is.</li>
             <li>Models are combined with weights based on their validation accuracy. Missing models are left out, never guessed.</li>
             <li>If the top probability is below 60%, the top two classes are close, or the models disagree, the result is shown as <strong>inconclusive</strong>.</li>
           </ol>
