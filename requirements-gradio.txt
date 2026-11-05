@@ -1,0 +1,3 @@
+# Optional alternative UI (app.py)
+-r requirements.txt
+gradio>=4.44

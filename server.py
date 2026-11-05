@@ -1,383 +1,251 @@
-import base64
+"""NeuroScan AI web server (FastAPI).
+
+    python server.py                      # http://127.0.0.1:8000
+    NEUROSCAN_PORT=9000 python server.py
+
+Configuration (environment variables):
+    NEUROSCAN_HOST            bind address (default 127.0.0.1)
+    NEUROSCAN_PORT            port (default 8000)
+    NEUROSCAN_MAX_UPLOAD_MB   upload size limit (default 10)
+    NEUROSCAN_CORS_ORIGINS    comma-separated allowed origins (default: none, same-origin only)
+    NEUROSCAN_TTA             1/0 - flip test-time augmentation (default 1)
+    NEUROSCAN_LOG_LEVEL       logging level (default INFO)
+"""
+from __future__ import annotations
+
 import io
+import ipaddress
 import json
+import logging
 import os
+from contextlib import asynccontextmanager
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Dict, List, Optional
-from fastapi import FastAPI, File, Form, UploadFile
+
+import uvicorn
+from fastapi import FastAPI, File, Form, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
-import numpy as np
-from PIL import Image
-import torch
-import uvicorn
+from PIL import Image, UnidentifiedImageError
 
-from src.config import (
-    CLASS_METADATA,
-    CLASS_NAMES,
-    IMAGE_SIZE,
-    MODELS_DIR,
-    PLOTS_DIR,
-    RESULTS_DIR,
-    TEST_DIR,
-    get_device,
-)
-from src.inference import (
-    generate_gradcam_overlay,
-    get_available_trained_models,
-    predict_single_image,
-    prepare_image,
-)
-from src.models import MODEL_REGISTRY, build_model, count_parameters, load_checkpoint
+from src.config import CLASS_NAMES, FRONTEND_DIR, MODELS_DIR, RESULTS_DIR, SAMPLE_SCANS_DIR, get_device
+from src.inference import InferenceService
 
-app = FastAPI(title="Brain Tumor MRI Detection & Benchmark Suite")
+logger = logging.getLogger("neuroscan.server")
 
-# Enable CORS for local development
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
-
-device = get_device()
-print(f"Backend Server starting on device: {device}")
-
-# Pre-load available trained models into memory
-LOADED_MODELS: Dict[str, torch.nn.Module] = {}
+ALLOWED_FORMATS = {"JPEG", "PNG", "BMP", "TIFF", "WEBP"}
+Image.MAX_IMAGE_PIXELS = 40_000_000  # ~6300x6300; larger files are rejected as decompression bombs
 
 
-def refresh_models():
-    global LOADED_MODELS
-    LOADED_MODELS.clear()
-    for key, spec in MODEL_REGISTRY.items():
-        ckpt_path = MODELS_DIR / spec["checkpoint"]
-        if ckpt_path.exists():
-            try:
-                m = build_model(key, num_classes=len(CLASS_NAMES), pretrained=False)
-                m = load_checkpoint(m, ckpt_path, device)
-                LOADED_MODELS[key] = m
-                print(f"  [+] Loaded {spec['display_name']} from {ckpt_path.name}")
-            except Exception as e:
-                print(f"  [!] Error loading {ckpt_path.name}: {e}")
+@dataclass
+class Settings:
+    host: str = os.environ.get("NEUROSCAN_HOST", "127.0.0.1")
+    port: int = int(os.environ.get("NEUROSCAN_PORT", "8000"))
+    max_upload_mb: float = float(os.environ.get("NEUROSCAN_MAX_UPLOAD_MB", "10"))
+    cors_origins: List[str] = field(default_factory=lambda: [
+        o.strip() for o in os.environ.get("NEUROSCAN_CORS_ORIGINS", "").split(",") if o.strip()
+    ])
+    tta: bool = os.environ.get("NEUROSCAN_TTA", "1") != "0"
+    models_dir: Path = MODELS_DIR
+    results_dir: Path = RESULTS_DIR
+    samples_dir: Path = SAMPLE_SCANS_DIR
+    frontend_dir: Path = FRONTEND_DIR
+
+    @property
+    def max_upload_bytes(self) -> int:
+        return int(self.max_upload_mb * 1024 * 1024)
+
+
+class APIError(Exception):
+    def __init__(self, status_code: int, message: str):
+        super().__init__(message)
+        self.status_code = status_code
+        self.message = message
+
+
+def index_samples(samples_dir: Path) -> Dict[str, Path]:
+    """Whitelist of sample scans: ``sample_id -> path``. Only these can be requested."""
+    index: Dict[str, Path] = {}
+    if not samples_dir.is_dir():
+        return index
+    for cls in CLASS_NAMES:
+        folder = samples_dir / cls
+        if folder.is_dir():
+            for path in sorted(folder.iterdir()):
+                if path.suffix.lower() in {".jpg", ".jpeg", ".png"} and path.stat().st_size > 500:
+                    index[f"{cls}/{path.name}"] = path
+    return index
+
+
+def decode_image(data: bytes) -> Image.Image:
+    if not data:
+        raise APIError(400, "The uploaded file is empty.")
+    try:
+        img = Image.open(io.BytesIO(data))
+        fmt = img.format
+        img.load()
+    except Image.DecompressionBombError:
+        raise APIError(413, "Image resolution is too large.")
+    except (UnidentifiedImageError, OSError, ValueError):
+        raise APIError(415, "The file is not a readable image. Upload a JPEG or PNG export of an MRI slice.")
+    if fmt not in ALLOWED_FORMATS:
+        raise APIError(415, f"Unsupported image format '{fmt}'. Use JPEG or PNG.")
+    if min(img.size) < 32:
+        raise APIError(400, f"Image is too small ({img.size[0]}x{img.size[1]}px).")
+    if getattr(img, "n_frames", 1) > 1:
+        img.seek(0)
+    return img.convert("RGB")
+
+
+def _read_limited(upload: UploadFile, limit: int) -> bytes:
+    data = upload.file.read(limit + 1)
+    if len(data) > limit:
+        raise APIError(413, f"File is larger than the {limit // (1024 * 1024)} MB limit.")
+    return data
+
+
+def _is_loopback(request: Request) -> bool:
+    try:
+        return request.client is not None and ipaddress.ip_address(request.client.host).is_loopback
+    except ValueError:
+        return request.client is not None and request.client.host in {"localhost", "testclient"}
+
+
+def _load_json(path: Path):
+    try:
+        with open(path) as f:
+            return json.load(f)
+    except (OSError, json.JSONDecodeError):
+        return None
+
+
+def create_app(settings: Optional[Settings] = None, service: Optional[InferenceService] = None) -> FastAPI:
+    settings = settings or Settings()
+
+    @asynccontextmanager
+    async def lifespan(app: FastAPI):
+        if service is None:
+            app.state.service = InferenceService(
+                models_dir=settings.models_dir, device=get_device(), tta=settings.tta,
+                benchmark_path=settings.results_dir / "model_comparison_metrics.json",
+            ).load()
         else:
-            # Fallback to untrained structure for instant boot without downloading 330MB ImageNet weights
-            try:
-                m = build_model(key, num_classes=len(CLASS_NAMES), pretrained=False)
-                m.to(device).eval()
-                LOADED_MODELS[key] = m
-                print(f"  [-] Initialized {spec['display_name']} structure (awaiting {spec['checkpoint']})")
-            except Exception as e:
-                print(f"  [!] Fallback build error for {key}: {e}")
+            app.state.service = service
+        app.state.samples = index_samples(settings.samples_dir)
+        logger.info("Ready: %d model(s) loaded, %d sample scans", len(app.state.service.models), len(app.state.samples))
+        yield
 
+    app = FastAPI(title="NeuroScan AI", version="2.0.0", lifespan=lifespan,
+                  docs_url="/api/docs", redoc_url=None, openapi_url="/api/openapi.json")
 
-refresh_models()
+    if settings.cors_origins:
+        app.add_middleware(CORSMiddleware, allow_origins=settings.cors_origins,
+                           allow_methods=["GET", "POST"], allow_headers=["*"])
 
-
-@app.post("/api/refresh")
-def reload_models():
-    """Explicitly reload model checkpoints from disk."""
-    refresh_models()
-    return {"status": "refreshed", "loaded_models": list(LOADED_MODELS.keys())}
-
-
-@app.get("/api/status")
-def get_system_status():
-    """Return model checkpoint availability and hardware device info."""
-    refresh_models()
-    models_status = []
-    for key, spec in MODEL_REGISTRY.items():
-        ckpt = MODELS_DIR / spec["checkpoint"]
-        is_trained = ckpt.exists()
-        ckpt_size_mb = round(ckpt.stat().st_size / (1024 * 1024), 2) if is_trained else 0
-        
-        # Get parameter count
-        dummy_model = LOADED_MODELS.get(key)
-        param_info = count_parameters(dummy_model) if dummy_model else {"total": 0, "trainable": 0}
-        
-        models_status.append(
-            {
-                "key": key,
-                "display_name": spec["display_name"],
-                "description": spec["description"],
-                "checkpoint": spec["checkpoint"],
-                "is_trained": is_trained,
-                "checkpoint_size_mb": ckpt_size_mb,
-                "parameters_total": param_info["total"],
-                "parameters_trainable": param_info["trainable"],
-            }
+    @app.middleware("http")
+    async def guard_and_secure(request: Request, call_next):
+        length = request.headers.get("content-length")
+        if length and length.isdigit() and int(length) > settings.max_upload_bytes + 64 * 1024:
+            return JSONResponse(status_code=413, content={"error": f"Request exceeds the {settings.max_upload_mb:g} MB limit."})
+        response = await call_next(request)
+        response.headers.setdefault("X-Content-Type-Options", "nosniff")
+        response.headers.setdefault("X-Frame-Options", "DENY")
+        response.headers.setdefault("Referrer-Policy", "no-referrer")
+        response.headers.setdefault(
+            "Content-Security-Policy",
+            "default-src 'self'; script-src 'self'; "
+            "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com https://cdnjs.cloudflare.com; "
+            "font-src 'self' https://fonts.gstatic.com https://cdnjs.cloudflare.com; "
+            "img-src 'self' data: blob:; connect-src 'self'; frame-ancestors 'none'",
         )
+        return response
 
-    return {
-        "device": str(device),
-        "total_classes": len(CLASS_NAMES),
-        "classes": CLASS_NAMES,
-        "class_metadata": CLASS_METADATA,
-        "models": models_status,
-        "models_dir": str(MODELS_DIR),
-    }
+    @app.exception_handler(APIError)
+    async def api_error_handler(_request: Request, exc: APIError):
+        return JSONResponse(status_code=exc.status_code, content={"error": exc.message})
 
+    # ------------------------------------------------------------------ API
+    @app.get("/api/health")
+    def health(request: Request):
+        return {"status": "ok", "models_loaded": len(request.app.state.service.models)}
 
-@app.get("/api/samples")
-def get_sample_images():
-    """Return sample MRI scans for one-click testing."""
-    samples = []
-    sample_scans_dir = Path(__file__).resolve().parent / "sample_scans"
-    active_dir = sample_scans_dir if sample_scans_dir.exists() else TEST_DIR
-    if active_dir.exists():
-        for cls_name in CLASS_NAMES:
-            cls_folder = active_dir / cls_name
-            if cls_folder.exists():
-                for img_path in sorted(cls_folder.glob("*.jpg"))[:3]:
-                    if img_path.stat().st_size > 500:  # Skip LFS pointers
-                        samples.append(
-                            {
-                                "id": f"{cls_name}/{img_path.name}",
-                                "class": cls_name,
-                                "filename": img_path.name,
-                                "path": f"/samples/{cls_name}/{img_path.name}",
-                            }
-                        )
-    return {"samples": samples}
+    @app.get("/api/status")
+    def status(request: Request):
+        return {**request.app.state.service.status(), "max_upload_mb": settings.max_upload_mb}
 
+    @app.post("/api/refresh")
+    def refresh(request: Request):
+        if not _is_loopback(request):
+            raise APIError(403, "Model reload is only allowed from the server machine.")
+        request.app.state.service.load()
+        request.app.state.samples = index_samples(settings.samples_dir)
+        return {"status": "refreshed", "loaded_models": list(request.app.state.service.models)}
 
-@app.get("/api/metrics")
-def get_metrics():
-    """Return test dataset benchmark metrics and comparison data."""
-    json_path = RESULTS_DIR / "model_comparison_metrics.json"
-    if json_path.exists():
-        try:
-            with open(json_path, "r") as f:
-                data = json.load(f)
-            return {"status": "available", "metrics": data}
-        except Exception as e:
-            return {"status": "error", "message": str(e)}
+    @app.get("/api/samples")
+    def samples(request: Request):
+        return {"samples": [
+            {"id": sample_id, "class": sample_id.split("/")[0], "filename": path.name,
+             "path": f"/samples/{sample_id}"}
+            for sample_id, path in request.app.state.samples.items()
+        ]}
 
-    # If full evaluation hasn't been run yet, provide default architectural benchmark estimates
-    mock_metrics = {
-        "custom_cnn": {
-            "display_name": "Custom CNN",
-            "test_accuracy_pct": 82.5,
-            "error_rate_pct": 17.5,
-            "cross_entropy_loss": 0.485,
-            "macro_f1": 0.821,
-            "auc_macro": 0.945,
-            "latency_ms_per_image": 18.2,
-            "parameters_total": 1439748,
-            "glioma_f1": 0.76,
-            "meningioma_f1": 0.79,
-            "notumor_f1": 0.92,
-            "pituitary_f1": 0.82,
-        },
-        "resnet18": {
-            "display_name": "ResNet-18 (Transfer Learning)",
-            "test_accuracy_pct": 88.4,
-            "error_rate_pct": 11.6,
-            "cross_entropy_loss": 0.325,
-            "macro_f1": 0.883,
-            "auc_macro": 0.978,
-            "latency_ms_per_image": 32.5,
-            "parameters_total": 11308356,
-            "glioma_f1": 0.84,
-            "meningioma_f1": 0.85,
-            "notumor_f1": 0.96,
-            "pituitary_f1": 0.89,
-        },
-        "mobilenet_v3": {
-            "display_name": "MobileNetV3 (Efficient CNN)",
-            "test_accuracy_pct": 87.2,
-            "error_rate_pct": 12.8,
-            "cross_entropy_loss": 0.354,
-            "macro_f1": 0.871,
-            "auc_macro": 0.971,
-            "latency_ms_per_image": 12.8,
-            "parameters_total": 1805560,
-            "glioma_f1": 0.82,
-            "meningioma_f1": 0.84,
-            "notumor_f1": 0.95,
-            "pituitary_f1": 0.88,
-        },
-        "vit": {
-            "display_name": "Vision Transformer (ViT-B/16)",
-            "test_accuracy_pct": 93.6,
-            "error_rate_pct": 6.4,
-            "cross_entropy_loss": 0.198,
-            "macro_f1": 0.935,
-            "auc_macro": 0.992,
-            "latency_ms_per_image": 84.6,
-            "parameters_total": 86050564,
-            "glioma_f1": 0.91,
-            "meningioma_f1": 0.92,
-            "notumor_f1": 0.98,
-            "pituitary_f1": 0.94,
-        },
-    }
-    return {"status": "default_benchmarks", "metrics": mock_metrics}
+    @app.get("/api/metrics")
+    def metrics():
+        data = _load_json(settings.results_dir / "model_comparison_metrics.json")
+        histories = {}
+        for path in sorted(settings.results_dir.glob("*_history.json")):
+            hist = _load_json(path) or {}
+            key = hist.get("model_name") or path.stem.replace("_history", "")
+            histories[key] = {k: hist.get(k) for k in ("display_name", "train_loss", "val_loss", "train_acc", "val_acc", "best_epoch")}
+        if not data:
+            return {"status": "unavailable", "metrics": {}, "histories": histories,
+                    "message": "No evaluation results yet. Run `python evaluate.py`."}
+        return {"status": "available", "metrics": data, "histories": histories,
+                "meta": _load_json(settings.results_dir / "evaluation_meta.json") or {}}
+
+    @app.post("/api/predict")
+    def predict(request: Request, file: Optional[UploadFile] = File(None), sample_id: Optional[str] = Form(None)):
+        # Sync endpoint: FastAPI runs it in a worker thread, so CPU-bound
+        # inference never blocks the event loop.
+        if file is not None and file.filename:
+            image = decode_image(_read_limited(file, settings.max_upload_bytes))
+        elif sample_id:
+            path = request.app.state.samples.get(sample_id)
+            if path is None:
+                raise APIError(404, "Unknown sample scan.")
+            with Image.open(path) as img:
+                image = img.convert("RGB")
+        else:
+            raise APIError(400, "Provide an MRI image file or a sample_id.")
+
+        service: InferenceService = request.app.state.service
+        if not service.models:
+            raise APIError(503, "No trained model checkpoints are available. Train models or add checkpoints to models/.")
+        return service.predict(image)
+
+    # ------------------------------------------------------------- static
+    if settings.samples_dir.is_dir():
+        app.mount("/samples", StaticFiles(directory=str(settings.samples_dir)), name="samples")
+    if settings.frontend_dir.is_dir():
+        app.mount("/static", StaticFiles(directory=str(settings.frontend_dir)), name="static")
+
+    @app.get("/", include_in_schema=False)
+    def index():
+        index_file = settings.frontend_dir / "index.html"
+        if index_file.exists():
+            return FileResponse(index_file)
+        return JSONResponse({"error": "Frontend not found"}, status_code=404)
+
+    return app
 
 
-@app.post("/api/predict")
-async def predict_mri(
-    file: Optional[UploadFile] = File(None),
-    sample_id: Optional[str] = Form(None),
-):
-    """
-    Run multi-model prediction and generate Grad-CAM visual explainability overlay.
-    """
-    # 1. Obtain image from upload or sample ID
-    pil_image = None
-    if file and file.filename:
-        content = await file.read()
-        pil_image = Image.open(io.BytesIO(content)).convert("RGB")
-    elif sample_id:
-        sample_path = TEST_DIR / sample_id
-        if not sample_path.exists():
-            sample_scans_dir = Path(__file__).resolve().parent / "sample_scans"
-            sample_path = sample_scans_dir / sample_id
-        if sample_path.exists():
-            pil_image = Image.open(sample_path).convert("RGB")
-
-    if pil_image is None:
-        return JSONResponse(status_code=400, content={"error": "No valid MRI image provided."})
-
-    # Convert original image to base64 for display
-    buffered_orig = io.BytesIO()
-    pil_image.resize((IMAGE_SIZE, IMAGE_SIZE)).save(buffered_orig, format="JPEG", quality=95)
-    orig_b64 = base64.b64encode(buffered_orig.getvalue()).decode("utf-8")
-
-    # 2. Run inference across all 4 architectures
-    model_predictions = []
-    gradcam_b64 = None
-
-    for key, spec in MODEL_REGISTRY.items():
-        model = LOADED_MODELS.get(key)
-        if model is None:
-            continue
-
-        res = predict_single_image(model, pil_image, device)
-        pred_class = res["predicted_class"]
-        conf = res["confidence"]
-        meta = CLASS_METADATA.get(pred_class, {})
-
-        is_trained = (MODELS_DIR / spec["checkpoint"]).exists()
-
-        model_predictions.append(
-            {
-                "model_key": key,
-                "display_name": spec["display_name"],
-                "predicted_class": pred_class,
-                "confidence_pct": round(conf * 100.0, 2),
-                "error_margin_pct": round((1.0 - conf) * 100.0, 2),
-                "color": meta.get("color", "#4f46e5"),
-                "severity": meta.get("severity", "Unknown"),
-                "description": meta.get("simple_summary", ""),
-                "confidences": {cls_k: round(v * 100.0, 2) for cls_k, v in res["confidences"].items()},
-                "is_checkpoint_loaded": is_trained,
-            }
-        )
-
-        # Generate Grad-CAM for the best CNN model (e.g. ResNet-18 or Custom CNN)
-        if gradcam_b64 is None and (key in {"resnet18", "custom_cnn", "mobilenet_v3"}):
-            try:
-                cam_vis = generate_gradcam_overlay(model, pil_image, device)
-                if cam_vis is not None:
-                    cam_pil = Image.fromarray(cam_vis)
-                    buffered_cam = io.BytesIO()
-                    cam_pil.save(buffered_cam, format="JPEG", quality=95)
-                    gradcam_b64 = base64.b64encode(buffered_cam.getvalue()).decode("utf-8")
-            except Exception as e:
-                print(f"GradCAM exception: {e}")
-
-    # 3. Multi-Model Ensemble Consensus & Plain-English Patient Analysis
-    votes = {}
-    class_prob_sums = {cls_name: 0.0 for cls_name in CLASS_NAMES}
-    for m in model_predictions:
-        p_cls = m["predicted_class"]
-        votes[p_cls] = votes.get(p_cls, 0) + 1
-        for cls_k, prob in m["confidences"].items():
-            class_prob_sums[cls_k] += prob
-
-    total_models = len(model_predictions)
-    avg_confidences = {
-        cls_k: round(prob_sum / max(1, total_models), 2)
-        for cls_k, prob_sum in class_prob_sums.items()
-    }
-
-    # Best consensus class based on average ensemble probability
-    consensus_class = max(avg_confidences, key=avg_confidences.get) if avg_confidences else "notumor"
-    consensus_confidence = avg_confidences.get(consensus_class, 0.0)
-    agreement_count = votes.get(consensus_class, 0)
-    consensus_meta = CLASS_METADATA.get(consensus_class, {})
-
-    if consensus_class == "notumor":
-        plain_summary = (
-            f"All {agreement_count} of {total_models} AI models analyzed this MRI and found normal, healthy brain tissue. "
-            "There are no detectable tumors, abnormal fluid swelling, or lesions identified."
-        )
-    else:
-        plain_summary = (
-            f"{agreement_count} of {total_models} AI models identified characteristics consistent with a {consensus_meta.get('display_name', consensus_class)}. "
-            f"{consensus_meta.get('simple_summary', '')} {consensus_meta.get('what_it_means', '')}"
-        )
-
-    # 4. Non-Doctor Plain-English Breakdown for all 4 Brain Tumor Categories
-    categories_guide = []
-    for cls_name in CLASS_NAMES:
-        meta = CLASS_METADATA.get(cls_name, {})
-        categories_guide.append(
-            {
-                "class_key": cls_name,
-                "display_name": meta.get("display_name", cls_name.capitalize()),
-                "color": meta.get("color", "#64748b"),
-                "icon": meta.get("icon", "fa-circle-info"),
-                "severity": meta.get("severity", "Normal"),
-                "simple_summary": meta.get("simple_summary", ""),
-                "plain_details": meta.get("plain_details", ""),
-                "what_it_means": meta.get("what_it_means", ""),
-                "average_confidence_pct": avg_confidences.get(cls_name, 0.0),
-                "is_detected": (cls_name == consensus_class),
-                "model_votes": votes.get(cls_name, 0),
-                "total_models": total_models,
-            }
-        )
-
-    return {
-        "success": True,
-        "consensus_prediction": consensus_class,
-        "consensus_display_name": consensus_meta.get("display_name", consensus_class.capitalize()),
-        "consensus_confidence": consensus_confidence,
-        "agreement_count": agreement_count,
-        "total_models": total_models,
-        "agreement_text": f"{agreement_count} of {total_models} AI Models Agree",
-        "plain_summary": plain_summary,
-        "categories_guide": categories_guide,
-        "original_image_b64": f"data:image/jpeg;base64,{orig_b64}",
-        "gradcam_image_b64": f"data:image/jpeg;base64,{gradcam_b64}" if gradcam_b64 else None,
-        "model_results": model_predictions,
-    }
-
-
-# Mount sample images
-SAMPLE_SCANS_DIR = Path(__file__).resolve().parent / "sample_scans"
-if SAMPLE_SCANS_DIR.exists():
-    app.mount("/samples", StaticFiles(directory=str(SAMPLE_SCANS_DIR)), name="samples")
-elif TEST_DIR.exists():
-    app.mount("/samples", StaticFiles(directory=str(TEST_DIR)), name="samples")
-
-# Mount frontend directory for HTML/CSS/JS
-FRONTEND_DIR = Path(__file__).resolve().parent / "frontend"
-FRONTEND_DIR.mkdir(parents=True, exist_ok=True)
-app.mount("/static", StaticFiles(directory=str(FRONTEND_DIR)), name="static")
-
-
-@app.get("/")
-def serve_index():
-    index_file = FRONTEND_DIR / "index.html"
-    if index_file.exists():
-        return FileResponse(index_file)
-    return JSONResponse({"status": "Frontend loading..."})
+app = create_app()
 
 
 if __name__ == "__main__":
-    uvicorn.run("server:app", host="127.0.0.1", port=8000, reload=False)
+    logging.basicConfig(level=os.environ.get("NEUROSCAN_LOG_LEVEL", "INFO"),
+                        format="%(asctime)s %(levelname)s %(name)s: %(message)s")
+    cfg = Settings()
+    uvicorn.run("server:app", host=cfg.host, port=cfg.port, reload=False)

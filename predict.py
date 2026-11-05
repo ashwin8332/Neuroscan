@@ -1,55 +1,77 @@
+"""Classify a single brain-MRI slice from the command line.
+
+    python predict.py sample_scans/glioma/Te-gl_10.jpg            # calibrated ensemble
+    python predict.py scan.png --model resnet18                    # one model
+    python predict.py scan.png --json > result.json                # machine-readable
+"""
+from __future__ import annotations
+
 import argparse
+import json
+import sys
 from pathlib import Path
+
 import torch
 
-from src.config import CLASS_NAMES, MODELS_DIR, get_device
-from src.inference import predict_single_image
-from src.models import MODEL_REGISTRY, build_model, load_checkpoint
+from src.config import MEDICAL_DISCLAIMER, MODELS_DIR, get_device
+from src.inference import InferenceService
+from src.models import MODEL_REGISTRY
 
 
-def main():
-    parser = argparse.ArgumentParser(description="Predict brain tumor class from an MRI image.")
-    parser.add_argument("image", type=str, help="Path to brain MRI image file")
-    parser.add_argument(
-        "--model",
-        type=str,
-        default="resnet18",
-        choices=list(MODEL_REGISTRY.keys()),
-        help="Model architecture to use for prediction",
-    )
+def main(argv=None) -> int:
+    parser = argparse.ArgumentParser(description="Predict the brain tumor class of an MRI slice.")
+    parser.add_argument("image", type=Path, help="Path to a JPEG/PNG MRI slice")
+    parser.add_argument("--model", choices=list(MODEL_REGISTRY), help="Use one model instead of the ensemble")
+    parser.add_argument("--models-dir", type=Path, default=MODELS_DIR)
+    parser.add_argument("--no-tta", action="store_true", help="Disable flip test-time augmentation")
+    parser.add_argument("--json", action="store_true", help="Print JSON instead of a report")
     parser.add_argument("--cpu", action="store_true", help="Force CPU inference")
-    args = parser.parse_args()
+    args = parser.parse_args(argv)
 
-    image_path = Path(args.image)
-    if not image_path.exists():
-        print(f"Error: Image not found at {image_path}")
-        return
+    if not args.image.is_file():
+        print(f"Error: image not found: {args.image}", file=sys.stderr)
+        return 2
 
     device = torch.device("cpu") if args.cpu else get_device()
-    spec = MODEL_REGISTRY[args.model]
-    ckpt_path = MODELS_DIR / spec["checkpoint"]
+    service = InferenceService(models_dir=args.models_dir, device=device, tta=not args.no_tta).load()
+    if args.model:
+        if args.model not in service.models:
+            print(f"Error: {args.model} is unavailable ({service.unavailable.get(args.model, 'not loaded')})", file=sys.stderr)
+            return 2
+        service.models = {args.model: service.models[args.model]}
+    if not service.models:
+        print(f"Error: no trained checkpoints found in {args.models_dir}", file=sys.stderr)
+        return 2
 
-    print(f"\nAnalyzing: {image_path}")
-    print(f"Model: {spec['display_name']} ({device})")
+    result = service.predict(args.image, with_gradcam=False)
 
-    model = build_model(args.model, num_classes=len(CLASS_NAMES), pretrained=not ckpt_path.exists())
-    if ckpt_path.exists():
-        model = load_checkpoint(model, ckpt_path, device)
-        print(f"Loaded checkpoint from: {ckpt_path}")
-    else:
-        print("Note: Running with base ImageNet weights (no fine-tuned checkpoint found).")
+    if args.json:
+        slim = {k: v for k, v in result.items() if not k.endswith("_b64") and k not in {"gradcam", "categories_guide"}}
+        print(json.dumps(slim, indent=2))
+        return 0
 
-    result = predict_single_image(model, image_path, device)
-
-    print("\n" + "=" * 50)
-    print(f"Prediction: {result['predicted_class'].upper()} ({result['confidence']*100:.2f}% confidence)")
-    print("=" * 50)
-    print("Class Confidence Distribution:")
-    for cls_name, prob in result["confidences"].items():
-        bar = "#" * int(prob * 30)
-        print(f"  {cls_name:<12} : {prob*100:5.2f}% {bar}")
-    print("=" * 50 + "\n")
+    width = 64
+    print("=" * width)
+    print(f" {args.image}")
+    print("=" * width)
+    print(f" Finding    : {result['consensus_display_name']}")
+    print(f" Confidence : {result['confidence_level']} ({result['consensus_confidence']:.1f}% top class, "
+          f"{result['agreement_text']})")
+    print("-" * width)
+    for cls, prob in sorted(result["ensemble_probabilities"].items(), key=lambda kv: -kv[1]):
+        print(f"  {cls:<11} {prob:6.2f}% {'#' * int(round(prob / 100 * 36))}")
+    print("-" * width)
+    for row in result["model_results"]:
+        print(f"  {row['display_name']:<32} {row['predicted_class']:<11} {row['confidence_pct']:6.2f}%  "
+              f"(weight {row['weight'] * 100:.0f}%)")
+    for missing in result["unavailable_models"]:
+        print(f"  {missing['display_name']:<32} not used: {missing['reason']}")
+    for warning in result["warnings"]:
+        print(f"  ! {warning}")
+    print("-" * width)
+    print(f" {MEDICAL_DISCLAIMER}")
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())
