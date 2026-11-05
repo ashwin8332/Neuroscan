@@ -1,183 +1,206 @@
-# 🧠 Brain Tumor Detection & Multi-Model Comparative Study
+# NeuroScan AI · Brain MRI Tumor Classification & Model Comparison
 
-A complete, production-grade Machine Learning and Deep Learning system for **Brain Tumor MRI Classification and Multi-Model Comparison**.
+A research workbench that trains, evaluates and compares four deep-learning models for
+classifying brain MRI slices into **glioma, meningioma, pituitary tumor or no tumor**,
+and serves them through a web app with calibrated confidence and Grad-CAM explanations.
 
-This project trains and systematically evaluates **four distinct neural architectures** on a 4-class Brain MRI dataset, performing detailed side-by-side analysis of **error metrics (cross-entropy loss, error rate, false positive/negative rates)** and **accuracy metrics (top-1 accuracy, balanced accuracy, precision, recall, macro F1, and multi-class ROC-AUC)**.
+> **Research and education only.** NeuroScan AI is not a medical device, has not been
+> clinically validated and must not be used to diagnose, treat or rule out any condition.
 
----
-
-## 🔬 Dataset Overview
-
-The dataset classifies MRI scans into four pathology categories:
-- **Glioma**: Malignant tumors originating in glial cells with infiltrative margins.
-- **Meningioma**: Typically benign, extra-axial dural-based tumors.
-- **No Tumor**: Healthy brain scans without detectable lesions.
-- **Pituitary**: Neoplasms affecting the pituitary gland near the sella turcica.
-
-### Dataset Split Summary
-- **Training Set**: 5,600 MRI images (~1,400 per class, balanced)
-- **Testing Set**: 1,600 MRI images (~400 per class, balanced)
-- **Image Resolution**: 224 x 224 RGB
+| Model | Type | Parameters |
+|---|---|---|
+| Custom CNN (v2) | Residual + squeeze-excitation CNN trained from scratch | 1.6 M |
+| ResNet-18 | ImageNet transfer learning | 11.3 M |
+| MobileNetV3-Small | Efficient CNN for CPU / edge | 1.1 M |
+| ViT-B/16 | Vision Transformer | 86 M |
 
 ---
 
-## 🏗️ Model Architectures
+## 1. Why the original models over- and under-fitted
 
-1. **Custom Deep CNN** (`BrainTumorCNN`):
-   - 4 convolutional blocks (32 -> 64 -> 128 -> 256 channels).
-   - Batch Normalization & LeakyReLU ($\alpha=0.1$) activations.
-   - Adaptive Average Pooling $(4 \times 4)$, Dropout (0.4), and Dense classification head.
-   - Trainable parameters: ~1.44M.
+Numbers from the shipped checkpoints and `results/*.json` (Kaggle *Brain Tumor MRI* dataset):
 
-2. **ResNet-18 (Transfer Learning)**:
-   - Deep residual architecture with skip connections.
-   - Pre-trained on ImageNet-1K with a custom classification head.
-   - Trainable parameters: ~11.3M.
+| Model | Train acc (last epoch) | Validation acc (selected) | **Test acc** | Validation loss (selected) | **Test log-loss** | Diagnosis |
+|---|---|---|---|---|---|---|
+| Custom CNN | 89.5 % | 89.4 % | **79.5 %** | 0.319 | **0.637** | under-fitting + poor generalisation |
+| ResNet-18 | 99.1 % | 98.7 % | **95.0 %** | 0.041 | **0.314 (7.7x)** | over-fitting hidden by validation |
+| MobileNetV3 | 98.7 % | 97.3 % | **93.7 %** | 0.072 | **0.354 (4.9x)** | over-fitting, unstable validation |
+| ViT-B/16 | 99.4 % | 98.1 % | **94.3 %** | 0.064 | **0.296 (4.6x)** | over-fitting hidden by validation |
 
-3. **MobileNetV3-Small (Hardware-Efficient CNN)**:
-   - Modern, lightweight architecture with Squeeze-and-Excitation (SE) attention and Hard-Swish activations.
-   - Optimized for ultra-low latency inference on edge/CPU devices.
-   - Trainable parameters: ~1.8M.
+The validation set said "almost perfect" while the held-out test set disagreed, and the
+models were near 100 % confident even on misclassified scans. Glioma, the most dangerous
+class to miss, had only 56-82 % recall. Root causes found in the code and data:
 
-4. **Vision Transformer (ViT-B/16)**:
-   - Pure Transformer architecture using multi-head self-attention over $16 \times 16$ non-overlapping image patches.
-   - State-of-the-art representation capacity.
-   - Trainable parameters: ~86M.
+1. **Leaky validation split.** `random_split` on a training folder full of near-duplicates
+   (augmented copies, rescaled scans, adjacent slices) put copies of training images into
+   validation. On the SARTAJ subset of this dataset (`scripts/audit_dataset.py`),
+   **23.5 % of training images belong to near-duplicate groups** and **69 % of the official
+   test images have a near-copy in training** (no-tumor 100 %, meningioma 97 %, pituitary 41 %,
+   glioma 23 %); 7 of those pairs even carry different labels. Your test folder also contains
+   `Te-aug-*` augmented copies. Early stopping and checkpoint selection were therefore driven
+   by memorisation, and test accuracy is optimistic for meningioma / no-tumor.
+2. **Checkpoint selection on validation accuracy**, a noisy and saturated signal, with
+   patience counted on accuracy as well.
+3. **Fine-tuning recipe**: one learning rate for a pretrained backbone *and* a random head,
+   no warm-up, `ReduceLROnPlateau` on a noisy signal, weak augmentation, no label smoothing,
+   no calibration. This produces 100 % confidence and the validation swings in the curves.
+4. **Source shortcuts.** Each class comes mostly from one source dataset with its own zoom,
+   black borders and even watermarks (a "Medscape" banner on a no-tumor scan), and every
+   scan was stretched to 224x224.
+5. **Custom CNN**: 5 epochs at lr 1e-4 from scratch, with 73 % of its parameters in a single
+   4096x256 dense layer: too little training for too shallow features.
+6. **App-level bug**: `best_vit_model.pth` is git-ignored, so in every fresh clone the
+   server silently built a *randomly initialised* ViT and let it vote in the consensus. Its
+   vote is an arbitrary constant that changes on every restart (in two test runs it said
+   "no tumor" for every scan, then "meningioma" for all 12 samples). With the shipped
+   checkpoints the old app reported a **glioma** sample (`Te-gl_1.jpg`) as *"Normal / Healthy
+   Brain — All 3 of 4 AI models analyzed this MRI and found normal, healthy brain tissue.
+   There are no detectable tumors…"*. The new app excludes missing models, reports this scan
+   as **inconclusive**, and its Grad-CAM highlights the tumor.
 
----
+`results/plots/training_loss_accuracy_curves.png` and the app's **Training health** tab
+show the train / validation curves with the held-out test accuracy marked.
 
-## 📊 Error & Accuracy Comparison Metrics
+## 2. What changed
 
-The evaluation pipeline rigorously computes:
-- **Error Metrics**:
-  - **Cross-Entropy Loss (Log-Loss)**: Penalizes overconfident wrong predictions.
-  - **Top-1 Error Rate (%)**: $100\% - \text{Accuracy}\%$.
-  - **Misclassification Counts**: Total wrong predictions out of the test set.
-  - **Class-Specific Miss Rate**: $1 - \text{Recall}$ for each tumor class.
-- **Accuracy & Discrimination Metrics**:
-  - **Overall Test Accuracy (%)**
-  - **Balanced Accuracy (%)** (averages recall across all classes)
-  - **Macro Precision, Recall, and F1-Score**
-  - **Per-Class F1-Scores** (Glioma, Meningioma, No Tumor, Pituitary)
-  - **Multi-Class ROC-AUC** (One-vs-Rest)
-  - **Confusion Matrices**
-- **Operational Efficiency**:
-  - **Inference Latency** (milliseconds per image)
-  - **Parameter Footprint** (Total vs. Trainable)
+| Area | Change | Why |
+|---|---|---|
+| Split | Perceptual-hash near-duplicate groups + `StratifiedGroupKFold` | validation becomes independent of training |
+| Leakage | `scripts/audit_dataset.py`, `evaluate.py --exclude-leaked` | measure and report test-set contamination |
+| Preprocessing | crop to head, pad to square, resize (stored per checkpoint) | removes framing/watermark shortcuts, keeps aspect ratio |
+| Augmentation | random resized crop, flips, affine, contrast/brightness, blur, erasing | regularisation; anatomy-preserving only |
+| Recipe | LP-FT, discriminative LRs, warm-up + cosine, AdamW without decaying norms/biases, label smoothing, gradient clipping, EMA | prevents feature distortion and over-confidence, stabilises training |
+| Selection | early stopping and checkpointing on validation **loss** | accuracy saturates; loss tracks calibration |
+| Calibration | temperature scaling fitted on validation, saved in checkpoint | displayed confidence matches accuracy |
+| Custom CNN | v2: residual blocks + squeeze-excitation + global-pool head, 40 epochs at lr 2e-3 | fixes under-fitting without a huge dense layer |
+| Metrics | ECE, tumor sensitivity / specificity, missed tumors, model-only latency | clinically meaningful view; old latency included disk I/O |
+| Ensemble | weights = log-odds of validation accuracy; missing models excluded; inconclusive state | no random voters, honest uncertainty |
+| Checkpoints | arch, classes, preprocessing, temperature, val metrics; `weights_only=True` loading | reproducible inference, no pickle code execution |
 
----
+Old checkpoints still load and run with exactly the preprocessing they were trained with
+(verified by a test that compares against the original torchvision transform).
 
-## 🚀 Quick Start Guide
+## 3. Evidence: controlled experiment
 
-### 1. Environment Setup
-The project uses Python 3.11 with a virtual environment managed via `uv`:
+To check that the new pipeline fixes the problem rather than just moving numbers, the
+**original code (unmodified, from `main`)** and the **new pipeline** were trained on the
+same public data with the same ImageNet initialisation and compared on the official test
+split. The full Kaggle dataset cannot be downloaded in the sandbox used for this work, so
+the experiment uses the [SARTAJ dataset](https://github.com/sartajbhuvaji/brain-tumor-classification-dataset)
+(2,870 training / 394 test images), one of the three sources of the Kaggle dataset.
 
-```bash
-# Run any script directly via uv:
-uv run python <script_name>.py
-```
+Results for the original code (ResNet-18, 15 epochs):
 
-Or activate the virtual environment:
-```powershell
-.venv\Scripts\activate
-```
+| Metric | Original code |
+|---|---|
+| Validation accuracy (its random split) | 95.6 % |
+| Test accuracy | 70.1 % |
+| Test log-loss / ECE | 1.43 / 0.21 |
+| Accuracy on the 124 leakage-free test images | 21.0 % |
 
-### 2. Train Models
-Train individual models or all architectures:
+The validation score overstated real accuracy by more than 25 points, and on scans with no
+near-copy in training the model was mostly and confidently wrong. Results for the new
+pipeline are added below when its run completes.
 
-```bash
-# Train Custom CNN
-uv run train.py --model custom_cnn --epochs 10
-
-# Train ResNet-18
-uv run train.py --model resnet18 --epochs 10
-
-# Train MobileNetV3
-uv run train.py --model mobilenet_v3 --epochs 10
-
-# Train Vision Transformer
-uv run train.py --model vit --epochs 10
-
-# Train all models sequentially
-uv run train.py --model all --epochs 10
-```
-
-> **Tip for quick testing**: Use `--subset-fraction 0.1` for a fast 10% dry-run.
-
-### 3. Evaluate and Benchmark Models
-Run comprehensive evaluation on the 1,600 test images:
-
-```bash
-uv run evaluate.py
-```
-This prints the comparative table in console and exports:
-- `results/model_comparison_metrics.csv`
-- `results/model_comparison_metrics.json`
-
-### 4. Generate Publication-Quality Visualizations
-Generate side-by-side comparative plots:
+## 4. Quick start
 
 ```bash
-uv run compare.py
+python -m venv .venv && source .venv/bin/activate      # Windows: .venv\Scripts\activate
+pip install -r requirements.txt
+python server.py                                        # http://127.0.0.1:8000
 ```
-Figures generated in `results/plots/`:
-- `accuracy_and_error_comparison.png`: Dual bar chart comparing Accuracy vs Error Rate.
-- `f1_and_auc_comparison.png`: Macro F1 and ROC-AUC comparisons.
-- `per_class_f1_heatmap.png`: Matrix of per-class F1-scores across models.
-- `confusion_matrices_grid.png`: Side-by-side confusion matrices for all models.
-- `training_loss_accuracy_curves.png`: Convergence loss and accuracy curves over epochs.
 
-### 5. Launch the NeuroScan AI Web Application (Recommended)
-Launch the web interface powered by FastAPI:
+With `uv`: `uv venv && uv pip install -r requirements.txt && uv run python server.py`.
+
+The repository ships the original Custom CNN, ResNet-18 and MobileNetV3 checkpoints, so the
+app works immediately. The ViT checkpoint (330 MB) is git-ignored and is reported as
+unavailable rather than guessed. **Retrain with the new pipeline to get calibrated models**
+(section 5); the app picks up new checkpoints automatically.
+
+## 5. Training and evaluation
+
+Place the [Kaggle Brain Tumor MRI dataset](https://www.kaggle.com/datasets/masoudnickparvar/brain-tumor-mri-dataset)
+in `Dataset/brain-tumor-mri-dataset/{Training,Testing}`, or pass `--data-dir` / set
+`NEUROSCAN_DATA_DIR`. Folder names such as `glioma_tumor` or `no_tumor` are mapped automatically.
 
 ```bash
-uv run python server.py
+python scripts/audit_dataset.py                          # duplicates + train/test leakage report
+python train.py --model all                              # recommended recipes (src/config.py)
+python train.py --model resnet18 --epochs 20 --lr 5e-4   # override any recipe value
+python train.py --model custom_cnn --subset-fraction 0.1 --epochs 2   # quick smoke run
+python evaluate.py --tta                                 # test set, per-model + weighted ensemble
+python evaluate.py --tta --exclude-leaked --results-dir results/leakage_free
+python compare.py                                        # figures in results/plots/
+python predict.py sample_scans/glioma/Te-gl_10.jpg       # CLI prediction (add --json)
 ```
-Open your browser at: [http://127.0.0.1:8000](http://127.0.0.1:8000)
 
-Features:
-- **Live Diagnostic Lab**: Real-time inference across Custom CNN, ResNet-18, MobileNetV3, and ViT with **Grad-CAM Attention Heatmaps** (with interactive opacity slider).
-- **1-Click Test Presets**: Pre-loaded validated MRI scans from all 4 classes.
-- **Model Benchmark & Comparison Hub**: Interactive metrics tables and Chart.js plots for Accuracy vs Error Rate, Macro F1 vs ROC-AUC, and Per-Class Breakdown.
-- **Error & Confusion Analysis**: Normalized confusion matrix inspector and clinical failure mode analysis.
-- **Pathology Atlas**: Radiographic guide and anatomical details for Glioma, Meningioma, Pituitary Adenoma, and Normal scans.
+No GPU? `notebooks/Brain_Tumor_Colab_Training.ipynb` clones this repository and runs the same
+scripts on a free Colab GPU. For offline machines, `--pretrained-weights path/to/resnet18.pth`
+loads ImageNet weights from disk.
 
-*(Alternative Gradio interface also available at `uv run python app.py` on port 7861)*
+Each run writes `models/<name>.pth` (with preprocessing, temperature and validation metrics)
+and `results/<name>_history.json` (per-epoch curves, split report, generalisation gap).
 
-### 6. Predict Single MRI Image via CLI
+## 6. Web app and API
+
+The Diagnose tab shows the ensemble finding with confidence level, a probability spectrum
+with the 60 % and 85 % thresholds, an inconclusive state, input warnings, Grad-CAM, and the
+per-model breakdown. Other tabs: Benchmark, Error analysis (row-normalised confusion matrix),
+Training health (over/under-fitting diagnosis) and Guide. Chart.js and the icon font are
+vendored, so the app works offline.
+
+| Endpoint | Description |
+|---|---|
+| `GET /api/health` | liveness + number of loaded models |
+| `GET /api/status` | models, calibration, ensemble weights, class metadata |
+| `GET /api/samples` | bundled sample scans |
+| `POST /api/predict` | multipart `file` (JPEG/PNG) or `sample_id` → calibrated ensemble result |
+| `GET /api/metrics` | evaluation results, histories (never fabricated) |
+| `POST /api/refresh` | reload checkpoints (localhost only) |
+| `GET /api/docs` | OpenAPI UI |
+
+Configuration through environment variables: `NEUROSCAN_HOST`, `NEUROSCAN_PORT`,
+`NEUROSCAN_MAX_UPLOAD_MB` (10), `NEUROSCAN_CORS_ORIGINS` (off), `NEUROSCAN_TTA` (1),
+`NEUROSCAN_MODELS_DIR`, `NEUROSCAN_RESULTS_DIR`, `NEUROSCAN_DATA_DIR`.
+Uploads are size-limited and validated; sample ids are whitelisted; responses carry a CSP
+and other security headers. An optional Gradio UI is available via
+`pip install -r requirements-gradio.txt && python app.py`.
+
+## 7. Tests
+
 ```bash
-uv run predict.py "Dataset/brain-tumor-mri-dataset/Testing/glioma/Te-gl_1.jpg" --model resnet18
+pip install -r requirements-dev.txt
+pytest
 ```
 
-### 7. Interactive Jupyter Notebook
-Open `notebooks/model_comparison.ipynb` to step through the complete analysis, exploratory data analysis (EDA), code explanations, and visualization figures.
+43 tests run on synthetic MRI-like images in about 15 s: preprocessing and legacy parity,
+duplicate grouping and leak-free splits, checkpoints, calibration, ensembling, an end-to-end
+training run and the API's security behaviour. GitHub Actions runs them on every push.
 
----
-
-## 📁 Repository Structure
+## 8. Repository structure
 
 ```text
-AIML Project/
-├── Dataset/
-│   └── brain-tumor-mri-dataset/
-│       ├── Training/           # 5,600 training images (4 classes)
-│       └── Testing/            # 1,600 testing images (4 classes)
-├── models/                     # Saved .pth model checkpoints
-├── results/                    # Metrics CSV/JSON and evaluation output
-│   └── plots/                  # Comparison figures (PNG)
-├── notebooks/
-│   └── model_comparison.ipynb # Step-by-step Jupyter Notebook
-├── src/
-│   ├── __init__.py
-│   ├── config.py              # Centralized paths, classes, hyperparameters
-│   ├── data.py                # Augmentation transforms & data loaders
-│   ├── models.py              # CNN, ResNet-18, MobileNetV3, ViT architectures
-│   ├── metrics.py             # Error, accuracy, loss, and latency calculators
-│   └── inference.py           # Preprocessing, Grad-CAM, single-image inference
-├── app.py                     # Gradio multi-model comparative web app
-├── train.py                   # Multi-architecture training CLI
-├── evaluate.py                # Test set evaluation and metrics exporter
-├── compare.py                 # Comparative visualization generator
-├── predict.py                 # Single-image prediction CLI
-└── requirements.txt           # Verified environment dependencies
+src/
+  config.py         paths, class metadata, per-model training recipes
+  preprocessing.py  head cropping, square padding, input sanity checks
+  data.py           dataset scan, near-duplicate grouping, leak-free split, loaders
+  models.py         architectures, registry, checkpoint format
+  training.py       LP-FT training engine with EMA, early stopping, calibration
+  calibration.py    temperature scaling
+  metrics.py        accuracy, calibration and screening metrics
+  ensemble.py       reliability weights and uncertainty assessment
+  inference.py      inference service + Grad-CAM (used by server, CLI and Gradio)
+train.py · evaluate.py · compare.py · predict.py · server.py · app.py
+scripts/audit_dataset.py   dataset duplicate / leakage audit
+frontend/                  web UI (vanilla JS, vendored Chart.js and icons)
+tests/                     pytest suite
+notebooks/                 Colab training + analysis notebooks
 ```
+
+## 9. Limitations
+
+* Four classes only; "no tumor pattern" does not exclude other pathology.
+* Single 2-D slices; clinical reading uses full 3-D, multi-sequence studies.
+* Public data with mixed sources and duplicates: expect lower accuracy on new scanners
+  and hospitals, and report leakage-free results alongside the standard test set.
+* Grad-CAM is a coarse attribution map, not a segmentation.

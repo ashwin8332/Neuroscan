@@ -50,6 +50,13 @@ models/best_*.pth
 # !models/mobilenet_v3_final_model.pth (4.2MB)
 # !models/resnet18_final_model.pth (43.2MB)
 
+# Test / tooling caches
+.pytest_cache/
+.ruff_cache/
+
+# Atomic checkpoint writes (see src/models.py save_checkpoint)
+*.pth.tmp
+
 # Logs & temp files
 *.log
 scratch/

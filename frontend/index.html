@@ -1,500 +1,272 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>NEUROSCAN AI | Brain Tumor Detection & Multi-Model Comparative Benchmark</title>
-  
-  <!-- Modern Google Fonts -->
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="dark">
+  <meta name="description" content="NeuroScan AI - research workbench comparing deep-learning models for brain MRI tumor classification, with calibrated confidence and Grad-CAM explanations.">
+  <title>NeuroScan AI · Brain MRI Research Workbench</title>
+
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700;800&family=Plus+Jakarta+Sans:wght@300;400;500;600;700&display=swap" rel="stylesheet">
-  
-  <!-- FontAwesome Icons -->
-  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
-  
-  <!-- Chart.js for High Performance Visualizations -->
-  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
-
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600&family=Newsreader:ital,opsz,wght@0,6..72,400;0,6..72,500;1,6..72,400&display=swap">
+  <link rel="stylesheet" href="/static/vendor/fontawesome/css/fontawesome.min.css">
+  <link rel="stylesheet" href="/static/vendor/fontawesome/css/solid.min.css">
   <link rel="stylesheet" href="/static/style.css">
+  <script src="/static/vendor/chart.umd.min.js" defer></script>
+  <script src="/static/app.js" defer></script>
 </head>
 <body>
-  <!-- Ambient background glow elements -->
-  <div class="ambient-glow glow-cyan"></div>
-  <div class="ambient-glow glow-purple"></div>
-  <div class="ambient-glow glow-blue"></div>
+  <a class="skip-link" href="#main">Skip to content</a>
 
-  <!-- Main Navigation Header -->
-  <header class="app-header">
-    <div class="header-container">
-      <div class="brand">
-        <div class="brand-icon">
-          <i class="fa-solid fa-brain"></i>
-          <span class="pulse-ring"></span>
-        </div>
-        <div class="brand-text">
-          <div class="brand-title">NEUROSCAN <span class="gradient-text">AI</span></div>
-          <div class="brand-subtitle">Multi-Architecture Brain MRI Diagnostic & Benchmark Suite</div>
-        </div>
-      </div>
-
-      <div class="header-actions">
-        <div class="system-status-badge" id="system-status-pill">
-          <span class="status-dot"></span>
-          <span id="status-device-text">Connecting to Neural Engine...</span>
-        </div>
-        <div class="checkpoints-counter" id="checkpoints-badge">
-          <i class="fa-solid fa-microchip"></i>
-          <span id="checkpoints-count">0/4 Models Loaded</span>
-        </div>
+  <header class="topbar">
+    <div class="topbar__inner">
+      <a class="brand" href="/" aria-label="NeuroScan AI home">
+        <svg class="brand__mark" viewBox="0 0 40 40" aria-hidden="true">
+          <circle cx="20" cy="20" r="15.5" fill="none" stroke="currentColor" stroke-width="1.5"/>
+          <path d="M20 2v7M20 31v7M2 20h7M31 20h7" stroke="currentColor" stroke-width="1.5"/>
+          <path d="M14.5 15.5c1.8-2.6 5.4-3.3 8-1.4 2.2 1.6 2.7 4.6 1.2 6.8l-3.6 5.2" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+          <circle cx="20" cy="20" r="2" fill="currentColor"/>
+        </svg>
+        <span class="brand__text">
+          <span class="brand__name">NeuroScan</span>
+          <span class="brand__tag">AI&nbsp;·&nbsp;research workbench</span>
+        </span>
+      </a>
+      <div class="status-chips">
+        <span class="chip" id="chip-engine"><span class="chip__dot" aria-hidden="true"></span><span id="status-engine">Connecting…</span></span>
+        <span class="chip"><i class="fa-solid fa-layer-group" aria-hidden="true"></i><span id="status-models">– models</span></span>
       </div>
     </div>
-
-    <!-- Navigation Tabs -->
-    <nav class="nav-tabs-wrapper">
-      <div class="nav-tabs">
-        <button class="nav-tab active" data-tab="tab-diagnostic" id="tab-btn-diagnostic">
-          <i class="fa-solid fa-microscope"></i> Live Diagnostic Lab
-        </button>
-        <button class="nav-tab" data-tab="tab-benchmark" id="tab-btn-benchmark">
-          <i class="fa-solid fa-chart-column"></i> Model Benchmark & Comparison
-        </button>
-        <button class="nav-tab" data-tab="tab-error-analysis" id="tab-btn-error-analysis">
-          <i class="fa-solid fa-circle-exclamation"></i> Error & Confusion Analysis
-        </button>
-        <button class="nav-tab" data-tab="tab-pathology" id="tab-btn-pathology">
-          <i class="fa-solid fa-book-medical"></i> Pathology Atlas & Guide
-        </button>
-      </div>
+    <nav class="tabs" role="tablist" aria-label="Workbench sections">
+      <button class="tab" role="tab" id="tab-diagnose" aria-controls="panel-diagnose" aria-selected="true">
+        <i class="fa-solid fa-microscope" aria-hidden="true"></i> Diagnose
+      </button>
+      <button class="tab" role="tab" id="tab-benchmark" aria-controls="panel-benchmark" aria-selected="false" tabindex="-1">
+        <i class="fa-solid fa-chart-column" aria-hidden="true"></i> Benchmark
+      </button>
+      <button class="tab" role="tab" id="tab-errors" aria-controls="panel-errors" aria-selected="false" tabindex="-1">
+        <i class="fa-solid fa-table-cells" aria-hidden="true"></i> Error analysis
+      </button>
+      <button class="tab" role="tab" id="tab-training" aria-controls="panel-training" aria-selected="false" tabindex="-1">
+        <i class="fa-solid fa-wave-square" aria-hidden="true"></i> Training health
+      </button>
+      <button class="tab" role="tab" id="tab-guide" aria-controls="panel-guide" aria-selected="false" tabindex="-1">
+        <i class="fa-solid fa-book-medical" aria-hidden="true"></i> Guide
+      </button>
     </nav>
   </header>
 
-  <!-- Main Application Content Area -->
-  <main class="main-content">
-    
-    <!-- ==================== TAB 1: LIVE DIAGNOSTIC LAB ==================== -->
-    <section class="tab-pane active" id="tab-diagnostic">
-      
-      <!-- Top Overview Banner -->
-      <div class="lab-banner">
-        <div class="banner-content">
-          <h1>Real-Time Brain Tumor Classification & Explainability</h1>
-          <p>Upload a patient MRI scan or select a verified test sample to run parallel inference across four deep learning architectures with <strong>Grad-CAM visual localization</strong>.</p>
-        </div>
-        <div class="banner-metrics">
-          <div class="quick-stat">
-            <span class="stat-number">4</span>
-            <span class="stat-label">Candidate Models</span>
-          </div>
-          <div class="quick-stat">
-            <span class="stat-number">4</span>
-            <span class="stat-label">Pathology Classes</span>
-          </div>
-          <div class="quick-stat">
-            <span class="stat-number">224px</span>
-            <span class="stat-label">MRI Resolution</span>
-          </div>
-        </div>
-      </div>
+  <div class="disclaimer" role="note">
+    <i class="fa-solid fa-triangle-exclamation" aria-hidden="true"></i>
+    <p><strong>Research use only.</strong> <span id="disclaimer-text">NeuroScan AI is not a medical device, has not been clinically validated and must not be used to diagnose, treat or rule out any condition.</span></p>
+  </div>
 
-      <div class="diagnostic-grid">
-        <!-- Left Column: Input Scan and Presets -->
-        <div class="diagnostic-sidebar">
-          
-          <!-- Upload Box -->
-          <div class="card glass-card upload-card">
-            <div class="card-header">
-              <h3><i class="fa-solid fa-cloud-arrow-up"></i> Upload Brain MRI Scan</h3>
-            </div>
-            
-            <div class="drop-zone" id="drop-zone">
-              <input type="file" id="file-input" accept="image/jpeg,image/png,image/jpg" hidden>
-              <div class="drop-zone-content" id="drop-zone-prompt">
-                <div class="upload-icon-pulse">
-                  <i class="fa-solid fa-file-medical"></i>
-                </div>
-                <h4>Drag & Drop MRI image here</h4>
-                <p>Supports DICOM exports, JPEG, PNG (T1/T2/FLAIR)</p>
-                <button type="button" class="btn btn-secondary" id="browse-btn">
-                  <i class="fa-solid fa-folder-open"></i> Browse File
-                </button>
+  <main id="main" tabindex="-1">
+    <!-- ============================== DIAGNOSE ============================== -->
+    <section class="tabpanel" role="tabpanel" id="panel-diagnose" aria-labelledby="tab-diagnose">
+      <div class="lab">
+        <aside class="lab__input" aria-label="Scan input">
+          <div class="panel reveal">
+            <h2 class="eyebrow"><span class="step">01</span> Scan input</h2>
+            <div class="dropzone" id="dropzone" role="button" tabindex="0" aria-describedby="dropzone-hint">
+              <input type="file" id="file-input" accept="image/jpeg,image/png" hidden>
+              <div class="dropzone__empty" id="dropzone-empty">
+                <i class="fa-solid fa-file-image dropzone__icon" aria-hidden="true"></i>
+                <span class="dropzone__title">Drop an MRI slice here</span>
+                <span class="dropzone__sub">or <u>browse files</u></span>
               </div>
+              <figure class="dropzone__preview" id="dropzone-preview" hidden>
+                <img id="preview-img" alt="Selected MRI scan">
+                <figcaption id="preview-name" class="mono"></figcaption>
+              </figure>
+            </div>
+            <p class="hint" id="dropzone-hint">JPEG or PNG export of a single axial, coronal or sagittal slice · max <span id="max-upload">10</span>&nbsp;MB. DICOM files are not supported.</p>
+            <div class="actions">
+              <button class="btn btn--primary" id="analyze-btn" type="button" disabled>
+                <i class="fa-solid fa-wave-square" aria-hidden="true"></i><span>Analyze scan</span>
+              </button>
+              <button class="btn btn--ghost" id="clear-btn" type="button" hidden>Clear</button>
+            </div>
+            <p class="alert" id="input-error" role="alert" hidden></p>
+          </div>
 
-              <!-- Preview Zone with Scanning Laser Effect -->
-              <div class="scan-preview-container" id="scan-preview-container" style="display: none;">
-                <img id="image-preview" src="" alt="MRI Preview">
-                <div class="scanning-laser" id="scanning-laser"></div>
-                <button type="button" class="btn-clear-preview" id="clear-preview-btn" title="Remove scan">
-                  <i class="fa-solid fa-xmark"></i>
-                </button>
+          <div class="panel reveal">
+            <h2 class="eyebrow">Sample scans <span class="eyebrow__aside">held-out test images</span></h2>
+            <div class="samples" id="samples" aria-busy="true">
+              <span class="skeleton"></span><span class="skeleton"></span><span class="skeleton"></span>
+              <span class="skeleton"></span><span class="skeleton"></span><span class="skeleton"></span>
+            </div>
+          </div>
+        </aside>
+
+        <div class="lab__results" id="results" aria-live="polite" aria-busy="false">
+          <div class="empty-state reveal" id="empty-state">
+            <div class="empty-state__scope" aria-hidden="true"><span></span></div>
+            <h2>No scan analyzed yet</h2>
+            <p>Upload an MRI slice or pick a sample. Every available model analyzes it, the results are combined
+              into one calibrated finding, and you can see which regions drove the decision.</p>
+          </div>
+
+          <div id="result-view" hidden>
+            <article class="panel verdict" id="verdict">
+              <h2 class="eyebrow"><span class="step">02</span> Ensemble finding</h2>
+              <div class="verdict__head">
+                <p class="verdict__title" id="verdict-title"></p>
+                <span class="level" id="verdict-level"></span>
               </div>
-            </div>
+              <p class="verdict__meta mono"><span id="verdict-agreement"></span><span aria-hidden="true"> · </span><span id="verdict-time"></span></p>
 
-            <!-- Analysis Action Button -->
-            <button class="btn btn-primary btn-glow btn-block" id="run-inference-btn" disabled>
-              <i class="fa-solid fa-bolt-lightning"></i> Run Multi-Model Diagnostic
-            </button>
-          </div>
-
-          <!-- Quick Test Presets -->
-          <div class="card glass-card samples-card">
-            <div class="card-header">
-              <h3><i class="fa-solid fa-flask"></i> Quick Test Presets</h3>
-              <span class="tag">1-Click Scans</span>
-            </div>
-            <p class="section-hint">Select a validated MRI scan from the 1,600 testing dataset images:</p>
-            
-            <div class="samples-grid" id="samples-container">
-              <!-- Dynamically populated sample buttons -->
-              <div class="sample-skeleton"></div>
-              <div class="sample-skeleton"></div>
-              <div class="sample-skeleton"></div>
-              <div class="sample-skeleton"></div>
-            </div>
-          </div>
-        </div>
-
-        <!-- Right Column: Diagnostic Results & Explainability -->
-        <div class="diagnostic-results">
-          
-          <!-- Patient-Friendly Scan Assessment & Multi-Model Consensus -->
-          <div class="card glass-card assessment-panel-card" id="consensus-panel" style="display: none;">
-            <!-- Top Assessment Header -->
-            <div class="assessment-header">
-              <div class="assessment-header-left">
-                <span class="eyebrow-tag"><i class="fa-solid fa-notes-medical"></i> DIAGNOSTIC SCAN ASSESSMENT</span>
-                <h2 id="consensus-title" class="assessment-title">Normal / Healthy Brain Scan</h2>
-                <div class="consensus-models-agreement" id="consensus-models-agreement">
-                  <i class="fa-solid fa-circle-check"></i>
-                  <span id="consensus-agreement-text">4 of 4 AI Models Agree</span>
-                  <span class="dot-separator">&bull;</span>
-                  <span id="consensus-avg-conf">98.34% Avg Confidence</span>
+              <div class="spectrum" id="spectrum" role="img">
+                <div class="spectrum__bar" id="spectrum-bar"></div>
+                <div class="spectrum__ticks" aria-hidden="true">
+                  <span style="left:60%"><b>60</b></span><span style="left:85%"><b>85</b></span>
                 </div>
               </div>
-              <div class="consensus-badge" id="consensus-severity-badge">Normal / Clear</div>
-            </div>
+              <ul class="spectrum__legend" id="spectrum-legend"></ul>
 
-            <!-- Plain English Explanation Box -->
-            <div class="plain-english-box">
-              <div class="plain-english-header">
-                <i class="fa-solid fa-lightbulb"></i>
-                <span>WHAT THIS MEANS (PLAIN ENGLISH)</span>
-              </div>
-              <p id="consensus-description" class="plain-english-text">
-                All 4 neural network models examined this scan and confirmed healthy brain anatomy with no abnormal masses or tumor signals.
-              </p>
-            </div>
+              <p class="verdict__summary" id="verdict-summary"></p>
+              <ul class="warnings" id="verdict-warnings" hidden></ul>
+            </article>
 
-            <!-- 4-Category Patient Guide (Details for each tumor type + Highlighted Detected Row) -->
-            <div class="classes-guide-section">
-              <div class="guide-header-row">
-                <span class="guide-subtitle"><i class="fa-solid fa-book-medical"></i> Brain Categories Reference &mdash; Detected Condition Highlighted:</span>
-              </div>
-              <div class="classes-guide-grid" id="classes-guide-grid">
-                <!-- Injected dynamically by app.js with details for glioma, meningioma, notumor, pituitary -->
-              </div>
-            </div>
-          </div>
-
-          <!-- Grad-CAM Visual Explainability Card -->
-          <div class="card glass-card gradcam-card" id="gradcam-card" style="display: none;">
-            <div class="card-header">
-              <div>
-                <h3><i class="fa-solid fa-layer-group"></i> Grad-CAM Neural Attention Heatmap</h3>
-                <p class="subtitle">Gradient-weighted Class Activation Mapping highlighting discriminative tumor regions</p>
-              </div>
-              <div class="gradcam-controls">
-                <label for="opacity-slider">Heatmap Opacity:</label>
-                <input type="range" id="opacity-slider" min="0" max="100" value="75">
-                <span id="opacity-val">75%</span>
-              </div>
-            </div>
-
-            <div class="gradcam-comparison-view">
-              <div class="cam-box">
-                <div class="cam-label">Original MRI Scan</div>
-                <div class="cam-img-wrapper">
-                  <img id="cam-orig-img" src="" alt="Original MRI">
+            <div class="split">
+              <article class="panel viewer">
+                <h2 class="eyebrow"><span class="step">03</span> Where the model looked</h2>
+                <div class="lightbox" id="lightbox">
+                  <img id="viewer-base" alt="MRI slice as seen by the model">
+                  <img id="viewer-heat" class="lightbox__heat" alt="" aria-hidden="true">
+                  <span class="lightbox__corner lightbox__corner--tl" aria-hidden="true"></span>
+                  <span class="lightbox__corner lightbox__corner--tr" aria-hidden="true"></span>
+                  <span class="lightbox__corner lightbox__corner--bl" aria-hidden="true"></span>
+                  <span class="lightbox__corner lightbox__corner--br" aria-hidden="true"></span>
+                  <span class="lightbox__scan" aria-hidden="true"></span>
+                  <span class="lightbox__label mono" id="viewer-label"></span>
                 </div>
-              </div>
-              <div class="cam-box">
-                <div class="cam-label">Grad-CAM Activation Overlay</div>
-                <div class="cam-img-wrapper" id="cam-overlay-wrapper">
-                  <img id="cam-base-img" src="" alt="Base MRI">
-                  <img id="cam-heat-img" src="" alt="Grad-CAM Heatmap">
+                <div class="viewer__controls" id="viewer-controls">
+                  <label for="opacity">Heatmap</label>
+                  <input type="range" id="opacity" min="0" max="100" value="70" aria-describedby="viewer-note">
+                  <output for="opacity" id="opacity-out" class="mono">70%</output>
                 </div>
-              </div>
+                <div class="colorscale" aria-hidden="true"><span>low</span><i></i><span>high influence</span></div>
+                <p class="hint" id="viewer-note">Grad-CAM shows which regions most influenced the prediction. It is not a tumor outline and can highlight irrelevant areas.</p>
+              </article>
+
+              <article class="panel models">
+                <h2 class="eyebrow"><span class="step">04</span> Individual models</h2>
+                <div class="model-list" id="model-cards"></div>
+                <p class="hint" id="unavailable-note" hidden></p>
+              </article>
             </div>
-          </div>
 
-          <!-- Multi-Model Parallel Prediction Cards -->
-          <div class="card-header-standalone">
-            <h3><i class="fa-solid fa-network-wired"></i> Parallel Multi-Architecture Predictions</h3>
-            <span class="badge-pill">4 Models Compared</span>
+            <article class="panel">
+              <h2 class="eyebrow">What the four categories mean</h2>
+              <div class="categories" id="categories"></div>
+            </article>
           </div>
-
-          <div class="models-grid" id="models-results-container">
-            <!-- Placeholder state before first scan -->
-            <div class="empty-state-card card glass-card">
-              <div class="empty-state-icon">
-                <i class="fa-solid fa-brain"></i>
-              </div>
-              <h3>No Scan Analyzed Yet</h3>
-              <p>Upload an MRI scan or click on one of the quick test presets on the left to inspect predictions from Custom CNN, ResNet-18, MobileNetV3, and Vision Transformer simultaneously.</p>
-            </div>
-          </div>
-
         </div>
       </div>
     </section>
 
-    <!-- ==================== TAB 2: BENCHMARK & COMPARISON HUB ==================== -->
-    <section class="tab-pane" id="tab-benchmark">
-      <div class="lab-banner">
-        <div class="banner-content">
-          <h1>Comprehensive Architecture Comparison & Benchmark</h1>
-          <p>Examine cross-model performance across accuracy, error rate, cross-entropy loss, macro F1, multiclass ROC-AUC, and latency.</p>
+    <!-- ============================== BENCHMARK ============================= -->
+    <section class="tabpanel" role="tabpanel" id="panel-benchmark" aria-labelledby="tab-benchmark" hidden>
+      <header class="section-head">
+        <div>
+          <h1>Benchmark on the held-out test set</h1>
+          <p class="lede" id="benchmark-lede">Accuracy, calibration and screening performance of every model with a checkpoint.</p>
         </div>
-        <button class="btn btn-secondary" id="refresh-metrics-btn">
-          <i class="fa-solid fa-arrows-rotate"></i> Refresh Benchmark Data
-        </button>
-      </div>
-
-      <!-- Comparative Metrics Table -->
-      <div class="card glass-card table-card">
-        <div class="card-header">
-          <h3><i class="fa-solid fa-table"></i> Model Performance & Error Benchmark Table</h3>
-          <span class="tag">Evaluated on 1,600 Test Scans</span>
-        </div>
-        <div class="table-responsive">
-          <table class="benchmark-table" id="benchmark-table">
-            <thead>
-              <tr>
-                <th>Model Architecture</th>
-                <th>Test Accuracy</th>
-                <th>Top-1 Error Rate</th>
-                <th>Cross-Entropy Loss</th>
-                <th>Macro F1</th>
-                <th>ROC-AUC</th>
-                <th>Inference Latency</th>
-                <th>Total Parameters</th>
-                <th>Checkpoint Status</th>
-              </tr>
-            </thead>
-            <tbody id="benchmark-tbody">
-              <!-- Dynamically populated -->
-            </tbody>
+        <button class="btn btn--ghost" id="refresh-metrics" type="button"><i class="fa-solid fa-arrows-rotate" aria-hidden="true"></i> Refresh</button>
+      </header>
+      <p class="alert alert--info" id="metrics-notice" hidden></p>
+      <div class="stat-row" id="benchmark-stats"></div>
+      <div class="panel">
+        <div class="table-wrap" tabindex="0" role="region" aria-label="Benchmark table">
+          <table class="data-table" id="benchmark-table">
+            <caption class="sr-only">Test-set metrics per model. Best value per column is marked.</caption>
+            <thead></thead><tbody></tbody>
           </table>
         </div>
+        <p class="hint">Calibration error (ECE) measures how far displayed confidence is from real accuracy; lower is better. Tumor sensitivity is the share of tumor scans flagged as any tumor.</p>
       </div>
+      <div class="chart-grid">
+        <figure class="panel chart"><figcaption class="eyebrow">Accuracy vs. error rate</figcaption><div class="chart__canvas"><canvas id="chart-accuracy" role="img" aria-label="Bar chart of test accuracy and error rate per model"></canvas></div></figure>
+        <figure class="panel chart"><figcaption class="eyebrow">Macro F1 &amp; ROC-AUC</figcaption><div class="chart__canvas"><canvas id="chart-f1" role="img" aria-label="Bar chart of macro F1 and ROC-AUC per model"></canvas></div></figure>
+        <figure class="panel chart"><figcaption class="eyebrow">Per-class F1</figcaption><div class="chart__canvas"><canvas id="chart-perclass" role="img" aria-label="Bar chart of F1 score per tumor class and model"></canvas></div></figure>
+        <figure class="panel chart"><figcaption class="eyebrow">Screening: tumor sensitivity &amp; specificity</figcaption><div class="chart__canvas"><canvas id="chart-screening" role="img" aria-label="Bar chart of tumor sensitivity and specificity per model"></canvas></div></figure>
+      </div>
+    </section>
 
-      <!-- Comparison Charts Grid -->
-      <div class="charts-grid">
-        <div class="card glass-card chart-card">
-          <div class="card-header">
-            <h3><i class="fa-solid fa-chart-bar"></i> Accuracy vs. Error Rate Trade-off</h3>
-          </div>
-          <div class="chart-container">
-            <canvas id="chart-acc-err"></canvas>
-          </div>
+    <!-- =========================== ERROR ANALYSIS =========================== -->
+    <section class="tabpanel" role="tabpanel" id="panel-errors" aria-labelledby="tab-errors" hidden>
+      <header class="section-head">
+        <div>
+          <h1>Where the models go wrong</h1>
+          <p class="lede">Row-normalised confusion matrix: each row is the true class and sums to 100%.</p>
         </div>
-
-        <div class="card glass-card chart-card">
-          <div class="card-header">
-            <h3><i class="fa-solid fa-chart-line"></i> Macro F1-Score & ROC-AUC</h3>
-          </div>
-          <div class="chart-container">
-            <canvas id="chart-f1-auc"></canvas>
-          </div>
+        <label class="select">
+          <span>Model</span>
+          <select id="cm-model"></select>
+        </label>
+      </header>
+      <div class="errors-layout">
+        <div class="panel">
+          <div class="cm" id="confusion-matrix" role="table" aria-label="Confusion matrix"></div>
         </div>
-
-        <div class="card glass-card chart-card full-width">
-          <div class="card-header">
-            <h3><i class="fa-solid fa-shapes"></i> Pathology-Specific F1 Performance Breakdown</h3>
-          </div>
-          <div class="chart-container">
-            <canvas id="chart-per-class"></canvas>
-          </div>
+        <div class="panel">
+          <h2 class="eyebrow">Findings from the data</h2>
+          <ul class="insights" id="error-insights"></ul>
         </div>
       </div>
     </section>
 
-    <!-- ==================== TAB 3: ERROR & CONFUSION ANALYSIS ==================== -->
-    <section class="tab-pane" id="tab-error-analysis">
-      <div class="lab-banner">
-        <div class="banner-content">
-          <h1>Error Pattern Analysis & Confusion Matrix Inspector</h1>
-          <p>Investigate where models succeed and fail, including edge case misclassifications between infiltrative Gliomas and dural Meningiomas.</p>
+    <!-- =========================== TRAINING HEALTH ========================== -->
+    <section class="tabpanel" role="tabpanel" id="panel-training" aria-labelledby="tab-training" hidden>
+      <header class="section-head">
+        <div>
+          <h1>Training health: over- and under-fitting</h1>
+          <p class="lede">Training vs. validation curves per model. A widening gap means memorisation (over-fitting); two curves that stay low mean the model is not learning enough (under-fitting).</p>
         </div>
-      </div>
-
-      <div class="analysis-grid">
-        <div class="card glass-card">
-          <div class="card-header">
-            <h3><i class="fa-solid fa-magnifying-glass-chart"></i> Error Dynamics Breakdown</h3>
-          </div>
-          <div class="error-breakdown-content">
-            <div class="error-metric-box">
-              <span class="error-val" id="highest-error-rate">17.5%</span>
-              <span class="error-desc">Highest Error Rate (Custom CNN)</span>
-            </div>
-            <div class="error-metric-box">
-              <span class="error-val" id="lowest-error-rate">6.4%</span>
-              <span class="error-desc">Lowest Error Rate (Vision Transformer)</span>
-            </div>
-            <div class="error-metric-box">
-              <span class="error-val" id="most-confused-pair">Glioma ↔ Meningioma</span>
-              <span class="error-desc">Most Frequent Misclassification</span>
-            </div>
-          </div>
-          
-          <div class="clinical-note">
-            <h4><i class="fa-solid fa-stethoscope"></i> Clinical Insights into Error Modes:</h4>
-            <ul>
-              <li><strong>Infiltrative Boundaries:</strong> High-grade gliomas with edema can visually resemble atypical meningiomas on non-contrast T2 sequences.</li>
-              <li><strong>Transfer Learning Edge:</strong> Pre-trained backbones (ResNet-18 & ViT) reduce glioma error rates by over 40% compared to models trained from scratch.</li>
-              <li><strong>Pituitary Preservation:</strong> Pituitary adenomas demonstrate the lowest misclassification rate across all models due to their distinctive sellar anatomical location.</li>
-            </ul>
-          </div>
-        </div>
-
-        <div class="card glass-card">
-          <div class="card-header">
-            <h3><i class="fa-solid fa-border-all"></i> Normalized Confusion Matrix Visualizer</h3>
-            <div class="model-select-wrapper">
-              <select id="cm-model-select" class="form-select">
-                <option value="custom_cnn">Custom CNN</option>
-                <option value="resnet18" selected>ResNet-18 (Transfer Learning)</option>
-                <option value="mobilenet_v3">MobileNetV3</option>
-                <option value="vit">Vision Transformer (ViT)</option>
-              </select>
-            </div>
-          </div>
-          <div class="chart-container" style="height: 340px;">
-            <canvas id="chart-confusion-matrix"></canvas>
-          </div>
-        </div>
-      </div>
+      </header>
+      <p class="alert alert--info" id="training-notice" hidden></p>
+      <div class="training-grid" id="training-grid"></div>
     </section>
 
-    <!-- ==================== TAB 4: PATHOLOGY ATLAS & GUIDE ==================== -->
-    <section class="tab-pane" id="tab-pathology">
-      <div class="lab-banner">
-        <div class="banner-content">
-          <h1>Clinical Brain Tumor Pathology Reference</h1>
-          <p>Detailed radiological characteristics, anatomical localization, and diagnostic criteria for each class in the dataset.</p>
+    <!-- ================================ GUIDE =============================== -->
+    <section class="tabpanel" role="tabpanel" id="panel-guide" aria-labelledby="tab-guide" hidden>
+      <header class="section-head">
+        <div>
+          <h1>Reading the results</h1>
+          <p class="lede">What each category means, how confident the system is, and what it cannot do.</p>
         </div>
-      </div>
-
-      <div class="pathology-cards-grid">
-        <!-- Glioma Card -->
-        <div class="card glass-card pathology-card border-rose">
-          <div class="pathology-header">
-            <div class="pathology-badge badge-rose">Malignant / Infiltrative</div>
-            <h2>Glioma</h2>
-          </div>
-          <div class="pathology-body">
-            <p>Tumors originating in glial supporting cells (astrocytes, oligodendrocytes, ependymal cells). Encompasses low-grade astrocytomas to high-grade glioblastomas (GBM).</p>
-            <div class="pathology-details">
-              <div class="detail-item">
-                <strong>Anatomical Origin:</strong> Cerebral hemispheres, brainstem, spinal cord.
-              </div>
-              <div class="detail-item">
-                <strong>MRI Appearance:</strong> Heterogeneous signal, irregular rim enhancement, surrounding vasogenic edema, mass effect.
-              </div>
-              <div class="detail-item">
-                <strong>Severity:</strong> <span class="tag-danger">High / Critical</span>
-              </div>
-            </div>
-          </div>
-        </div>
-
-        <!-- Meningioma Card -->
-        <div class="card glass-card pathology-card border-amber">
-          <div class="pathology-header">
-            <div class="pathology-badge badge-amber">Typically Benign / Extra-Axial</div>
-            <h2>Meningioma</h2>
-          </div>
-          <div class="pathology-body">
-            <p>Slow-growing tumors arising from arachnoid cap cells of the meninges surrounding the brain and spinal cord.</p>
-            <div class="pathology-details">
-              <div class="detail-item">
-                <strong>Anatomical Origin:</strong> Dural coverings, parasagittal convexity, sphenoid ridge.
-              </div>
-              <div class="detail-item">
-                <strong>MRI Appearance:</strong> Well-demarcated extra-axial mass, homogeneous vivid post-contrast enhancement, "dural tail" sign.
-              </div>
-              <div class="detail-item">
-                <strong>Severity:</strong> <span class="tag-warning">Moderate</span>
-              </div>
-            </div>
-          </div>
-        </div>
-
-        <!-- Pituitary Card -->
-        <div class="card glass-card pathology-card border-blue">
-          <div class="pathology-header">
-            <div class="pathology-badge badge-blue">Sellar / Endocrine</div>
-            <h2>Pituitary Adenoma</h2>
-          </div>
-          <div class="pathology-body">
-            <p>Neoplasms arising from anterior pituitary glandular cells in the sella turcica, often causing endocrine or visual disturbance.</p>
-            <div class="pathology-details">
-              <div class="detail-item">
-                <strong>Anatomical Origin:</strong> Sella turcica at base of skull, adjacent to optic chiasm.
-              </div>
-              <div class="detail-item">
-                <strong>MRI Appearance:</strong> Sellar remodeling, suprasellar extension with classic "figure-of-eight" or "snowman" appearance.
-              </div>
-              <div class="detail-item">
-                <strong>Severity:</strong> <span class="tag-info">Moderate</span>
-              </div>
-            </div>
-          </div>
-        </div>
-
-        <!-- No Tumor Card -->
-        <div class="card glass-card pathology-card border-emerald">
-          <div class="pathology-header">
-            <div class="pathology-badge badge-emerald">Healthy / Normal Scan</div>
-            <h2>No Tumor (Normal)</h2>
-          </div>
-          <div class="pathology-body">
-            <p>Healthy cranial scan showing normal brain parenchyma, preserved ventricles, and absence of mass lesions or midline shift.</p>
-            <div class="pathology-details">
-              <div class="detail-item">
-                <strong>Anatomical Status:</strong> Preserved sulcal-gyral pattern, midline symmetry.
-              </div>
-              <div class="detail-item">
-                <strong>MRI Appearance:</strong> Symmetric ventricles, sharp gray-white differentiation, normal baseline flow voids.
-              </div>
-              <div class="detail-item">
-                <strong>Severity:</strong> <span class="tag-success">Normal</span>
-              </div>
-            </div>
-          </div>
-        </div>
+      </header>
+      <div class="guide-grid" id="guide-categories"></div>
+      <div class="guide-columns">
+        <article class="panel prose">
+          <h2>How a finding is produced</h2>
+          <ol>
+            <li>The slice is cropped to the head and padded to a square, exactly as during training.</li>
+            <li>Each trained model scores the slice and its mirror image; scores are calibrated so that "80%" means right about 80% of the time on validation data.</li>
+            <li>Models are combined with weights based on their validation accuracy. Missing models are left out, never guessed.</li>
+            <li>If the top probability is below 60%, the top two classes are close, or the models disagree, the result is shown as <strong>inconclusive</strong>.</li>
+          </ol>
+        </article>
+        <article class="panel prose">
+          <h2>Limitations</h2>
+          <ul>
+            <li>Only four categories are known. "No tumor pattern" does not exclude stroke, MS, bleeding or other conditions.</li>
+            <li>One 2-D slice is analyzed; radiologists review full 3-D studies with several sequences.</li>
+            <li>The public training data mixes sources and contains duplicates, so test scores are likely optimistic for new hospitals and scanners.</li>
+            <li>Grad-CAM heatmaps are coarse and are not tumor segmentations.</li>
+          </ul>
+        </article>
       </div>
     </section>
-
   </main>
 
-  <!-- Modern Footer -->
-  <footer class="app-footer">
-    <div class="footer-container">
-      <div>
-        <strong>NEUROSCAN AI Suite</strong> &copy; 2026 &bull; Deep Learning Comparative Diagnostics
-      </div>
-      <div class="footer-links">
-        <span>PyTorch 2.3.1</span> &bull; 
-        <span>Vision Transformer</span> &bull; 
-        <span>ResNet-18</span> &bull; 
-        <span>MobileNetV3</span> &bull; 
-        <span>Custom CNN</span>
-      </div>
-    </div>
+  <footer class="footer">
+    <span>NeuroScan AI · research workbench</span>
+    <span class="mono" id="footer-meta">PyTorch · Custom CNN · ResNet-18 · MobileNetV3 · ViT-B/16</span>
   </footer>
 
-  <script src="/static/app.js"></script>
+  <div class="toast" id="toast" role="status" aria-live="polite" hidden></div>
 </body>
 </html>
