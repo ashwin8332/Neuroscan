@@ -11,7 +11,6 @@ import importlib
 import io
 import json
 import logging
-import os
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, Optional, Tuple, Union
@@ -19,7 +18,7 @@ from typing import Any, Dict, Optional, Tuple, Union
 import numpy as np
 from PIL import Image, ImageOps
 
-from .config import CLASS_NAMES, MODEL_SPECS
+from .config import CLASS_NAMES, MODEL_SPECS, env_number
 from .preprocessing import PreprocessConfig, preprocess_image, to_rgb
 
 logger = logging.getLogger(__name__)
@@ -191,7 +190,7 @@ def _session_options():
 
     options = ort.SessionOptions()
     options.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL
-    threads = int(os.environ.get("NEUROSCAN_ORT_THREADS", "0") or 0)
+    threads = env_number("NEUROSCAN_ORT_THREADS", 0, cast=int, minimum=0)  # 0: onnxruntime decides
     if threads > 0:
         options.intra_op_num_threads = threads
     return options

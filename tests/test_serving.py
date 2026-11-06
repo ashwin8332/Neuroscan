@@ -334,3 +334,114 @@ def test_json_writer_is_strict(tmp_path):
 
 def test_head_request_on_health(client):
     assert client.head("/api/health").status_code == 200
+
+
+# --------------------------------------------------------------------------- #
+# Deployment settings: a typo in an environment variable must not take the app down
+# --------------------------------------------------------------------------- #
+@pytest.mark.parametrize("raw,expected", [
+    ("", True), ("1", True), ("Yes", True), ("ON", True),
+    ("0", False), ("false", False), ("No", False), (" off ", False),
+    ("maybe", True),  # invalid -> default
+])
+def test_env_flag(monkeypatch, raw, expected):
+    from src.config import env_flag
+
+    monkeypatch.setenv("NEUROSCAN_TEST_FLAG", raw)
+    assert env_flag("NEUROSCAN_TEST_FLAG", True) is expected
+
+
+@pytest.mark.parametrize("raw,expected", [
+    ("", 10.0), ("2.5", 2.5), (" 3 ", 3.0),
+    ("4MB", 10.0), ("0", 10.0), ("-1", 10.0), ("nan", 10.0), ("inf", 10.0), ("1e9", 10.0),
+])
+def test_env_number(monkeypatch, raw, expected):
+    from src.config import env_number
+
+    monkeypatch.setenv("NEUROSCAN_TEST_NUMBER", raw)
+    assert env_number("NEUROSCAN_TEST_NUMBER", 10.0, minimum=0.1, maximum=1000) == expected
+
+
+@pytest.mark.parametrize("raw,expected", [
+    ("", 20), ("debug", 10), ("Warning", 30), ("WARN", 30), ("error", 40), ("15", 15), ("verbose", 20),
+])
+def test_env_log_level(monkeypatch, raw, expected):
+    from src.config import env_log_level
+
+    monkeypatch.setenv("NEUROSCAN_LOG_LEVEL", raw)
+    assert env_log_level() == expected
+
+
+def test_settings_ignore_invalid_values(monkeypatch):
+    for name, raw in {"NEUROSCAN_MAX_UPLOAD_MB": "4MB", "NEUROSCAN_PORT": "abc",
+                      "NEUROSCAN_TTA": "maybe", "NEUROSCAN_HOST": "  "}.items():
+        monkeypatch.setenv(name, raw)
+    s = server.Settings()
+    assert (s.max_upload_mb, s.port, s.tta, s.host) == (4.0 if server.ON_VERCEL else 10.0, 8000, True, "127.0.0.1")
+    monkeypatch.setenv("NEUROSCAN_TTA", "false")
+    monkeypatch.setenv("NEUROSCAN_MAX_UPLOAD_MB", "0")
+    s = server.Settings()
+    assert s.tta is False and s.max_upload_mb > 0
+
+
+@pytest.mark.parametrize("raw,expected", [
+    ("", "auto"), (" ONNX ", "onnx"), ("onnxruntime", "onnx"), ("PyTorch", "torch"), ("bogus", "auto"),
+])
+def test_backend_setting_is_tolerant(monkeypatch, raw, expected):
+    from src.inference import InferenceService
+
+    monkeypatch.setenv("NEUROSCAN_BACKEND", raw)
+    assert InferenceService().backend_preference == expected
+
+
+def test_explicit_backend_argument_stays_strict():
+    from src.inference import InferenceService
+
+    with pytest.raises(ValueError):
+        InferenceService(backend="bogus")
+
+
+def test_unusable_backend_setting_falls_back_to_onnx(monkeypatch):
+    """NEUROSCAN_BACKEND=torch on Vercel (no PyTorch) must still serve the ONNX models."""
+    import src.inference as inference
+
+    monkeypatch.setenv("NEUROSCAN_BACKEND", "torch")
+    monkeypatch.setattr(inference, "_torch_available", lambda: False)
+    svc = inference.InferenceService(benchmark_path=None).load()
+    manifest = json.loads((MODELS_DIR / "onnx" / "manifest.json").read_text())
+    assert svc.backend == "onnx" and set(svc.models) == set(manifest["models"])
+
+
+def test_health_reports_degraded_without_models(tmp_path):
+    app = server.create_app(server.Settings(models_dir=tmp_path, results_dir=tmp_path, serve_static=False))
+    body = TestClient(app).get("/api/health").json()
+    assert body["status"] == "degraded" and body["models_loaded"] == 0
+
+
+def test_vercel_function_survives_invalid_settings():
+    """Every optional setting mistyped at once, exactly as the function starts on Vercel."""
+    script = BLOCKER + textwrap.dedent("""
+        import json
+        from fastapi.testclient import TestClient
+        import server
+        c = TestClient(server.app)
+        health = c.get("/api/health").json()
+        status = c.get("/api/status").json()
+        data = open("public/samples/pituitary/Te-pi_10.jpg", "rb").read()
+        r = c.post("/api/predict", files={"file": ("x.jpg", data, "image/jpeg")})
+        s = server.Settings()
+        print(json.dumps({"health": health, "max_upload_mb": status["max_upload_mb"], "predict": r.status_code,
+                          "prediction": r.json().get("consensus_prediction"), "tta": s.tta, "port": s.port}))
+    """)
+    bad = {"NEUROSCAN_LOG_LEVEL": "verbose", "NEUROSCAN_MAX_UPLOAD_MB": "4MB", "NEUROSCAN_PORT": "abc",
+           "NEUROSCAN_TTA": "maybe", "NEUROSCAN_ORT_THREADS": "two", "NEUROSCAN_BACKEND": "ONNXRuntime "}
+    env = {**os.environ, "VERCEL": "1", **bad}
+    result = subprocess.run([sys.executable, "-c", script], cwd=ROOT, env=env, capture_output=True, text=True, timeout=300)
+    assert result.returncode == 0, result.stderr[-3000:]
+    manifest = json.loads((MODELS_DIR / "onnx" / "manifest.json").read_text())
+    assert json.loads(result.stdout.strip().splitlines()[-1]) == {
+        "health": {"status": "ok", "backend": "onnx", "models_loaded": len(manifest["models"])},
+        "max_upload_mb": 4.0, "predict": 200, "prediction": "pituitary", "tta": True, "port": 8000,
+    }
+    for name in ("NEUROSCAN_LOG_LEVEL", "NEUROSCAN_MAX_UPLOAD_MB", "NEUROSCAN_ORT_THREADS"):
+        assert f"Ignoring {name}=" in result.stderr, f"no warning logged for {name}"

@@ -73,6 +73,20 @@ def _torch_available() -> bool:
     return importlib.util.find_spec("torch") is not None
 
 
+BACKEND_ALIASES = {"pytorch": "torch", "onnxruntime": "onnx", "ort": "onnx"}
+
+
+def _backend_from_env() -> str:
+    """NEUROSCAN_BACKEND is a deployment setting: tolerate case, spaces and common
+    aliases, and fall back to ``auto`` instead of failing every request."""
+    raw = os.environ.get("NEUROSCAN_BACKEND", "").strip()
+    value = BACKEND_ALIASES.get(raw.lower(), raw.lower()) or "auto"
+    if value not in BACKENDS:
+        logger.warning("Ignoring NEUROSCAN_BACKEND=%r (expected auto, onnx or torch); using auto", raw)
+        return "auto"
+    return value
+
+
 class InferenceService:
     def __init__(
         self,
@@ -88,9 +102,11 @@ class InferenceService:
         self.device = device
         self.benchmark_path = benchmark_path
         self.tta = tta
-        self.backend_preference = (backend or os.environ.get("NEUROSCAN_BACKEND", "auto")).lower()
+        # An explicit argument (code, tests) is strict; the environment variable is tolerant.
+        self._strict_backend = backend is not None
+        self.backend_preference = backend.strip().lower() if backend is not None else _backend_from_env()
         if self.backend_preference not in BACKENDS:
-            raise ValueError(f"backend must be one of {BACKENDS}, got {self.backend_preference!r}")
+            raise ValueError(f"backend must be one of {BACKENDS}, got {backend!r}")
         self.backend = "none"
         self.models: Dict[str, ServingModel] = {}
         self.unavailable: Dict[str, str] = {}
@@ -109,11 +125,16 @@ class InferenceService:
 
     def _select_backend(self) -> str:
         has_onnx = (self.onnx_dir / "manifest.json").is_file()
-        if self.backend_preference == "onnx":
+        onnx_ok = has_onnx and onnx_runtime_available()
+        preference = self.backend_preference
+        if preference == "onnx" and (self._strict_backend or onnx_ok):
             return "onnx"
-        if self.backend_preference == "torch":
+        if preference == "torch" and (self._strict_backend or _torch_available()):
             return "torch"
-        if has_onnx and onnx_runtime_available():
+        if preference != "auto":  # requested through NEUROSCAN_BACKEND but unusable here
+            logger.warning("NEUROSCAN_BACKEND=%s cannot be used here (%s); choosing automatically", preference,
+                           "PyTorch is not installed" if preference == "torch" else "no ONNX export or onnxruntime")
+        if onnx_ok:
             return "onnx"
         if _torch_available():
             return "torch"

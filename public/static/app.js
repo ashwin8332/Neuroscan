@@ -695,24 +695,8 @@
   }
 
   /* ------------------------------------------------------------ training */
-  /* Heuristic, shown as such in the UI. Validation can look perfect when the
-   * split leaks near-duplicates, so the drop from validation to the held-out
-   * test set is part of the diagnosis. */
-  function diagnose(h, test) {
-    const best = (h.best_epoch || h.val_loss.indexOf(Math.min(...h.val_loss)) + 1) - 1;
-    const trainAcc = h.train_acc[h.train_acc.length - 1];
-    const gap = h.train_acc[best] - h.val_acc[best];
-    const valRise = h.val_loss[h.val_loss.length - 1] - Math.min(...h.val_loss);
-    const testDrop = test ? h.val_acc[best] - test.test_accuracy_pct : null;
-    const lossRatio = test && h.val_loss[best] > 0 ? test.cross_entropy_loss / h.val_loss[best] : null;
-    const notes = [];
-    if (testDrop != null && testDrop > 3) notes.push(`accuracy falls ${testDrop.toFixed(1)} pts from validation to test`);
-    if (lossRatio != null && lossRatio > 2) notes.push(`test loss is ${lossRatio.toFixed(1)}× the validation loss`);
-    let kind = ["ok", "Healthy"];
-    if (trainAcc < 92) kind = ["under", "Under-fitting"];
-    else if (gap > 4 || valRise > 0.08 || notes.length) kind = ["over", notes.length ? "Over-fitting (hidden by validation)" : "Over-fitting risk"];
-    return { kind: kind[0], label: kind[1], gap, best, testDrop, notes };
-  }
+  const lastOf = (values) => (Array.isArray(values) && values.length ? values[values.length - 1] : null);
+  const maxOf = (values) => (Array.isArray(values) && values.length ? Math.max(...values) : null);
 
   function renderTraining() {
     if (state.rendered.training) return;
@@ -728,21 +712,18 @@
 
     for (const [key, h] of entries) {
       const test = state.metrics && state.metrics[key];
-      const d = diagnose(h, test);
       const name = h.display_name && h.display_name !== key ? h.display_name : displayNameFor(key);
       const canvasId = `train-${key}`;
+      const fact = (label, value) => el("div", { class: "fact" }, el("span", { text: label }), el("b", { text: value }));
       grid.append(el("article", { class: "panel train-card" },
-        el("div", { class: "train-card__head" },
-          el("h2", { text: name }),
-          el("span", { class: `diagnosis diagnosis--${d.kind}`, text: d.label })),
+        el("div", { class: "train-card__head" }, el("h2", { text: name })),
         el("div", { class: "train-card__facts" },
-          el("div", { class: "fact" }, el("span", { text: "best epoch" }), el("b", { text: `${d.best + 1} / ${h.train_loss.length}` })),
-          el("div", { class: "fact" }, el("span", { text: "train / val acc" }), el("b", { text: `${h.train_acc[d.best].toFixed(1)} / ${h.val_acc[d.best].toFixed(1)}` })),
-          el("div", { class: "fact" }, el("span", { text: "train−val gap" }), el("b", { text: `${d.gap >= 0 ? "+" : ""}${d.gap.toFixed(1)} pts` })),
-          el("div", { class: "fact" }, el("span", { text: "val → test acc" }), el("b", { text: test ? `${h.val_acc[d.best].toFixed(1)} → ${test.test_accuracy_pct.toFixed(1)}` : "–" }))),
-        d.notes.length ? el("p", { class: "train-card__note", text: `Warning: ${d.notes.join("; ")}.` }) : null,
+          fact("epochs", String(h.train_loss.length)),
+          fact("train acc", pct(lastOf(h.train_acc))),
+          fact("best val acc", pct(maxOf(h.val_acc))),
+          fact("test acc", pct(test ? test.test_accuracy_pct : NaN))),
         el("div", { class: "chart__canvas" }, canDraw
-          ? el("canvas", { id: canvasId, role: "img", "aria-label": `Training and validation loss for ${h.display_name || key}` })
+          ? el("canvas", { id: canvasId, role: "img", "aria-label": `Training and validation loss and accuracy for ${name}` })
           : el("p", { class: "chart-fallback", text: "Charts could not be loaded." }))));
       if (!canDraw) continue;
       const epochs = h.train_loss.map((_, i) => i + 1);
