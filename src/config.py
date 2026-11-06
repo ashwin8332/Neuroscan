@@ -9,14 +9,71 @@ laptop, in Colab and inside a container:
 """
 from __future__ import annotations
 
+import logging
+import math
 import os
 from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import Any, Dict
+from typing import Any, Callable, Dict, Optional
 
 # NOTE: no torch import at module level. This module is imported by the web
 # server, which runs on Vercel with ONNX Runtime only (PyTorch does not fit in
 # a serverless function). get_device() imports torch lazily.
+
+# --------------------------------------------------------------------------- #
+# Environment variables
+# --------------------------------------------------------------------------- #
+# A typo in a deployment setting must not take the app down: invalid values are
+# logged and replaced by the default instead of raising at import time.
+_env_log = logging.getLogger("neuroscan.config")
+_TRUE, _FALSE = {"1", "true", "yes", "on"}, {"0", "false", "no", "off"}
+
+
+def _invalid(name: str, raw: str, default: Any) -> Any:
+    _env_log.warning("Ignoring %s=%r (invalid value); using the default %r", name, raw, default)
+    return default
+
+
+def env_flag(name: str, default: bool) -> bool:
+    """1/true/yes/on or 0/false/no/off, in any case."""
+    raw = os.environ.get(name, "").strip()
+    if not raw:
+        return default
+    if raw.lower() in _TRUE:
+        return True
+    if raw.lower() in _FALSE:
+        return False
+    return _invalid(name, raw, default)
+
+
+def env_number(name: str, default: Any, cast: Callable[[str], Any] = float,
+               minimum: Optional[float] = None, maximum: Optional[float] = None) -> Any:
+    """A finite number within [minimum, maximum]; anything else falls back to the default."""
+    raw = os.environ.get(name, "").strip()
+    if not raw:
+        return default
+    try:
+        value = cast(raw)
+    except ValueError:
+        return _invalid(name, raw, default)
+    if not math.isfinite(value) or (minimum is not None and value < minimum) \
+            or (maximum is not None and value > maximum):
+        return _invalid(name, raw, default)
+    return value
+
+
+def env_log_level(name: str = "NEUROSCAN_LOG_LEVEL", default: int = logging.INFO) -> int:
+    """A level name in any case (debug, INFO, Warning, ...) or a number."""
+    raw = os.environ.get(name, "").strip()
+    if not raw:
+        return default
+    if raw.isdigit():
+        return int(raw)
+    level = logging.getLevelName(raw.upper())
+    if isinstance(level, int):
+        return level
+    _invalid(name, raw, logging.getLevelName(default))
+    return default
 
 # --------------------------------------------------------------------------- #
 # Paths

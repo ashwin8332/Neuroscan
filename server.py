@@ -38,15 +38,14 @@ from fastapi.staticfiles import StaticFiles
 from PIL import Image, UnidentifiedImageError
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
-from src.config import CLASS_NAMES, MODELS_DIR, ON_VERCEL, PUBLIC_DIR, RESULTS_DIR
+from src.config import CLASS_NAMES, MODELS_DIR, ON_VERCEL, PUBLIC_DIR, RESULTS_DIR, env_flag, env_log_level, env_number
 from src.inference import InferenceService
 from src.jsonutil import json_safe
 from src.runtime import normalize_image
 
 logger = logging.getLogger("neuroscan.server")
 if ON_VERCEL and not logging.getLogger().handlers:  # surface INFO logs in the Vercel dashboard
-    logging.basicConfig(level=os.environ.get("NEUROSCAN_LOG_LEVEL", "INFO"),
-                        format="%(levelname)s %(name)s: %(message)s")
+    logging.basicConfig(level=env_log_level(), format="%(levelname)s %(name)s: %(message)s")
 
 ALLOWED_FORMATS = {"JPEG", "PNG", "BMP", "TIFF", "WEBP"}
 Image.MAX_IMAGE_PIXELS = 40_000_000  # ~6300x6300; larger files are rejected as decompression bombs
@@ -66,19 +65,19 @@ SECURITY_HEADERS = {
 
 
 def _default_upload_mb() -> float:
-    configured = float(os.environ.get("NEUROSCAN_MAX_UPLOAD_MB", "10"))
+    configured = float(env_number("NEUROSCAN_MAX_UPLOAD_MB", 10.0, minimum=0.1))
     return min(configured, VERCEL_BODY_LIMIT_MB) if ON_VERCEL else configured
 
 
 @dataclass
 class Settings:
-    host: str = field(default_factory=lambda: os.environ.get("NEUROSCAN_HOST", "127.0.0.1"))
-    port: int = field(default_factory=lambda: int(os.environ.get("NEUROSCAN_PORT", "8000")))
+    host: str = field(default_factory=lambda: os.environ.get("NEUROSCAN_HOST", "").strip() or "127.0.0.1")
+    port: int = field(default_factory=lambda: env_number("NEUROSCAN_PORT", 8000, cast=int, minimum=1, maximum=65535))
     max_upload_mb: float = field(default_factory=_default_upload_mb)
     cors_origins: List[str] = field(default_factory=lambda: [
         o.strip() for o in os.environ.get("NEUROSCAN_CORS_ORIGINS", "").split(",") if o.strip()
     ])
-    tta: bool = field(default_factory=lambda: os.environ.get("NEUROSCAN_TTA", "1") != "0")
+    tta: bool = field(default_factory=lambda: env_flag("NEUROSCAN_TTA", True))
     models_dir: Path = MODELS_DIR
     results_dir: Path = RESULTS_DIR
     public_dir: Path = PUBLIC_DIR
@@ -235,7 +234,8 @@ def create_app(settings: Optional[Settings] = None, service: Optional[InferenceS
     @app.api_route("/api/health", methods=["GET", "HEAD"])
     def health(request: Request):
         svc = get_service(request.app)
-        return {"status": "ok", "backend": svc.backend, "models_loaded": len(svc.models)}
+        return {"status": "ok" if svc.models else "degraded", "backend": svc.backend,
+                "models_loaded": len(svc.models)}
 
     @app.get("/api/status")
     def status(request: Request):
@@ -316,7 +316,6 @@ app = create_app()
 if __name__ == "__main__":
     import uvicorn
 
-    logging.basicConfig(level=os.environ.get("NEUROSCAN_LOG_LEVEL", "INFO"),
-                        format="%(asctime)s %(levelname)s %(name)s: %(message)s")
+    logging.basicConfig(level=env_log_level(), format="%(asctime)s %(levelname)s %(name)s: %(message)s")
     cfg = Settings()
     uvicorn.run("server:app", host=cfg.host, port=cfg.port, reload=False)

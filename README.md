@@ -216,8 +216,20 @@ How it fits Vercel's limits:
 Sample scans are listed in the static `public/samples/index.json`; the browser fetches a
 sample from the CDN and uploads it like any user file, so the function never reads static
 files. `vercel.json` adds the same CSP and security headers to the static site that the API
-sends. Optional environment variables: `NEUROSCAN_TTA`, `NEUROSCAN_LOG_LEVEL`,
-`NEUROSCAN_MAX_UPLOAD_MB` (capped at 4 on Vercel), `NEUROSCAN_ORT_THREADS`.
+sends.
+
+**Environment variables: none are required.** Vercel sets `VERCEL=1` itself; the app uses it to
+cap uploads at 4 MB and leave static files to the CDN. Optional settings:
+
+| Variable | Default | Accepted values |
+|---|---|---|
+| `NEUROSCAN_TTA` | on | `0`/`false`/`off` disables mirrored test-time augmentation (faster, slightly less robust) |
+| `NEUROSCAN_LOG_LEVEL` | `INFO` | `DEBUG`, `INFO`, `WARNING`, `ERROR`, in any case |
+| `NEUROSCAN_MAX_UPLOAD_MB` | 10 (4 on Vercel) | a positive number; on Vercel it can only be lowered |
+| `NEUROSCAN_ORT_THREADS` | chosen by ONNX Runtime | a whole number of threads |
+
+An invalid value is ignored and logged as a warning, so a typo cannot take the deployment down.
+Leave the `NEUROSCAN_*_DIR` path variables unset on Vercel: the defaults point at the deployed files.
 
 **Updating the deployed models:** train → `python scripts/export_onnx.py` → commit
 `models/onnx/` → push. The ViT-B/16 is excluded from the export by default: its ~330 MB ONNX
@@ -250,7 +262,8 @@ bombs) get a clear 4xx error. Every error is JSON.
 Configuration through environment variables: `NEUROSCAN_HOST`, `NEUROSCAN_PORT`,
 `NEUROSCAN_MAX_UPLOAD_MB` (10, or 4 on Vercel), `NEUROSCAN_CORS_ORIGINS` (off),
 `NEUROSCAN_TTA` (1), `NEUROSCAN_BACKEND` (`auto` | `onnx` | `torch`), `NEUROSCAN_MODELS_DIR`,
-`NEUROSCAN_ONNX_DIR`, `NEUROSCAN_RESULTS_DIR`, `NEUROSCAN_DATA_DIR`. An optional Gradio UI is
+`NEUROSCAN_ONNX_DIR`, `NEUROSCAN_RESULTS_DIR`, `NEUROSCAN_DATA_DIR`. Invalid values fall back to
+the default with a logged warning; `/api/health` reports `"degraded"` when no model is loaded. An optional Gradio UI is
 available via `pip install -r requirements-gradio.txt && python app.py`.
 
 ## 8. Tests
