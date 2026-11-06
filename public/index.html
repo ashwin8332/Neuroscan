@@ -49,7 +49,7 @@
         <i class="fa-solid fa-table-cells" aria-hidden="true"></i> Error analysis
       </button>
       <button class="tab" role="tab" id="tab-training" aria-controls="panel-training" aria-selected="false" tabindex="-1">
-        <i class="fa-solid fa-wave-square" aria-hidden="true"></i> Training health
+        <i class="fa-solid fa-wave-square" aria-hidden="true"></i> Training
       </button>
       <button class="tab" role="tab" id="tab-guide" aria-controls="panel-guide" aria-selected="false" tabindex="-1">
         <i class="fa-solid fa-book-medical" aria-hidden="true"></i> Guide
@@ -218,12 +218,12 @@
       </div>
     </section>
 
-    <!-- =========================== TRAINING HEALTH ========================== -->
+    <!-- ============================== TRAINING ============================== -->
     <section class="tabpanel" role="tabpanel" id="panel-training" aria-labelledby="tab-training" hidden>
       <header class="section-head">
         <div>
-          <h1>Training health: over- and under-fitting</h1>
-          <p class="lede">Training vs. validation curves per model. A widening gap means memorisation (over-fitting); two curves that stay low mean the model is not learning enough (under-fitting).</p>
+          <h1>Training history</h1>
+          <p class="lede">Loss and accuracy on the training and validation sets, epoch by epoch, for each model, with its accuracy on the held-out test set.</p>
         </div>
       </header>
       <p class="alert alert--info" id="training-notice" hidden></p>

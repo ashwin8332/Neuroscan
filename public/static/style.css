@@ -413,12 +413,7 @@ input[type="range"] { width: 100%; accent-color: var(--accent); }
 .train-card { display: grid; gap: 12px; }
 .train-card__head { display: flex; justify-content: space-between; align-items: baseline; gap: 10px; flex-wrap: wrap; }
 .train-card__head h2 { font: 400 22px/1.15 var(--font-display); }
-.diagnosis { font: 600 11px/1 var(--font-mono); letter-spacing: 0.08em; text-transform: uppercase; padding: 5px 9px; border-radius: 999px; border: 1px solid currentColor; }
-.diagnosis--ok { color: var(--notumor); }
-.diagnosis--over { color: var(--danger); }
-.diagnosis--under { color: var(--caution); }
 .train-card__facts { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 8px; }
-.train-card__note { color: var(--text-muted); font-size: 13px; }
 .fact { border: 1px solid var(--line); border-radius: var(--radius-sm); padding: 10px; }
 .fact span { display: block; font: 600 10px/1.3 var(--font-mono); letter-spacing: 0.1em; text-transform: uppercase; color: var(--text-faint); }
 .fact b { font: 600 17px/1.3 var(--font-mono); }

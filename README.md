@@ -58,8 +58,8 @@ class to miss, had only 56-82 % recall. Root causes found in the code and data:
    There are no detectable tumors…"*. The new app excludes missing models, reports this scan
    as **inconclusive**, and its Grad-CAM highlights the tumor.
 
-`results/plots/training_loss_accuracy_curves.png` and the app's **Training health** tab
-show the train / validation curves with the held-out test accuracy marked.
+`results/plots/training_loss_accuracy_curves.png` and the app's **Training** tab
+show the train / validation curves and each model's held-out test accuracy.
 
 ## 2. What changed
 
@@ -241,7 +241,7 @@ self-hosting).
 The Diagnose tab shows the ensemble finding with confidence level, a probability spectrum
 with the 60 % and 85 % thresholds, an inconclusive state, input warnings, Grad-CAM, and the
 per-model breakdown. Other tabs: Benchmark, Error analysis (row-normalised confusion matrix),
-Training health (over/under-fitting diagnosis) and Guide. Chart.js and the icon font are
+Training (loss and accuracy curves per model) and Guide. Chart.js and the icon font are
 vendored, so the app works offline.
 
 | Endpoint | Description |
