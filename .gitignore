@@ -72,3 +72,7 @@ desktop.ini
 .idea/
 *.sublime-project
 *.sublime-workspace
+
+# Self-hosted ViT export (~330 MB) must never be committed (GitHub 100 MB limit)
+models/onnx/*vit*.onnx
+*.onnx.tmp

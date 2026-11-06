@@ -1,6 +1,6 @@
 """Classify a single brain-MRI slice from the command line.
 
-    python predict.py sample_scans/glioma/Te-gl_10.jpg            # calibrated ensemble
+    python predict.py public/samples/glioma/Te-gl_10.jpg            # calibrated ensemble
     python predict.py scan.png --model resnet18                    # one model
     python predict.py scan.png --json > result.json                # machine-readable
 """

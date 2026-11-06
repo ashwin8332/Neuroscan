@@ -70,7 +70,7 @@
           <div class="panel reveal">
             <h2 class="eyebrow"><span class="step">01</span> Scan input</h2>
             <div class="dropzone" id="dropzone" role="button" tabindex="0" aria-describedby="dropzone-hint">
-              <input type="file" id="file-input" accept="image/jpeg,image/png" hidden>
+              <input type="file" id="file-input" accept="image/jpeg,image/png,image/webp,image/bmp,.jpg,.jpeg,.png,.webp,.bmp" hidden>
               <div class="dropzone__empty" id="dropzone-empty">
                 <i class="fa-solid fa-file-image dropzone__icon" aria-hidden="true"></i>
                 <span class="dropzone__title">Drop an MRI slice here</span>
@@ -81,7 +81,7 @@
                 <figcaption id="preview-name" class="mono"></figcaption>
               </figure>
             </div>
-            <p class="hint" id="dropzone-hint">JPEG or PNG export of a single axial, coronal or sagittal slice · max <span id="max-upload">10</span>&nbsp;MB. DICOM files are not supported.</p>
+            <p class="hint" id="dropzone-hint">JPEG, PNG, WebP or BMP export of a single axial, coronal or sagittal slice · max <span id="max-upload">10</span>&nbsp;MB. DICOM files are not supported.</p>
             <div class="actions">
               <button class="btn btn--primary" id="analyze-btn" type="button" disabled>
                 <i class="fa-solid fa-wave-square" aria-hidden="true"></i><span>Analyze scan</span>
@@ -244,7 +244,7 @@
           <h2>How a finding is produced</h2>
           <ol>
             <li>The slice is cropped to the head and padded to a square, exactly as during training.</li>
-            <li>Each trained model scores the slice and its mirror image; scores are calibrated so that "80%" means right about 80% of the time on validation data.</li>
+            <li>Each trained model scores the slice and its mirror image. Over-confident models are calibrated on validation data so their scores are not inflated; no model is ever made more confident than it is.</li>
             <li>Models are combined with weights based on their validation accuracy. Missing models are left out, never guessed.</li>
             <li>If the top probability is below 60%, the top two classes are close, or the models disagree, the result is shown as <strong>inconclusive</strong>.</li>
           </ol>

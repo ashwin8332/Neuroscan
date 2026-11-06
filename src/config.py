@@ -12,9 +12,11 @@ from __future__ import annotations
 import os
 from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import Dict
+from typing import Any, Dict
 
-import torch
+# NOTE: no torch import at module level. This module is imported by the web
+# server, which runs on Vercel with ONNX Runtime only (PyTorch does not fit in
+# a serverless function). get_device() imports torch lazily.
 
 # --------------------------------------------------------------------------- #
 # Paths
@@ -42,8 +44,12 @@ TEST_DIR = DATA_DIR / "Testing"
 MODELS_DIR = Path(os.environ.get("NEUROSCAN_MODELS_DIR", ROOT_DIR / "models")).expanduser()
 RESULTS_DIR = Path(os.environ.get("NEUROSCAN_RESULTS_DIR", ROOT_DIR / "results")).expanduser()
 PLOTS_DIR = RESULTS_DIR / "plots"
-SAMPLE_SCANS_DIR = ROOT_DIR / "sample_scans"
-FRONTEND_DIR = ROOT_DIR / "frontend"
+PUBLIC_DIR = ROOT_DIR / "public"            # static site: served by Vercel's CDN
+FRONTEND_DIR = PUBLIC_DIR                    # backwards-compatible alias
+STATIC_DIR = PUBLIC_DIR / "static"
+SAMPLE_SCANS_DIR = PUBLIC_DIR / "samples"
+ONNX_DIR = Path(os.environ.get("NEUROSCAN_ONNX_DIR", MODELS_DIR / "onnx")).expanduser()
+ON_VERCEL = bool(os.environ.get("VERCEL"))
 
 
 def ensure_output_dirs() -> None:
@@ -132,6 +138,35 @@ CLASS_METADATA = {
     },
 }
 
+# Display metadata for every architecture. Kept here (not in models.py) so the
+# serving code can describe models without importing PyTorch.
+MODEL_SPECS: Dict[str, Dict[str, Any]] = {
+    "custom_cnn": {
+        "display_name": "Custom CNN",
+        "description": "Residual CNN with squeeze-excitation, trained from scratch",
+        "checkpoint": "custom_cnn_final_model.pth",
+        "pretrained": False,
+    },
+    "resnet18": {
+        "display_name": "ResNet-18 (Transfer Learning)",
+        "description": "Deep residual network fine-tuned from ImageNet",
+        "checkpoint": "resnet18_final_model.pth",
+        "pretrained": True,
+    },
+    "mobilenet_v3": {
+        "display_name": "MobileNetV3 (Efficient CNN)",
+        "description": "Hardware-efficient CNN with squeeze-excitation and hard-swish",
+        "checkpoint": "mobilenet_v3_final_model.pth",
+        "pretrained": True,
+    },
+    "vit": {
+        "display_name": "Vision Transformer (ViT-B/16)",
+        "description": "Transformer with multi-head self-attention over 16x16 patches",
+        "checkpoint": "best_vit_model.pth",
+        "pretrained": True,
+    },
+}
+
 MEDICAL_DISCLAIMER = (
     "NeuroScan AI is a research and education tool. It is not a medical device, "
     "has not been clinically validated and must not be used to diagnose, treat or "
@@ -197,7 +232,10 @@ TRAIN_RECIPES: Dict[str, TrainRecipe] = {
 }
 
 
-def get_device(prefer_cuda: bool = True) -> torch.device:
+def get_device(prefer_cuda: bool = True):
+    """torch.device for training/evaluation (imports torch lazily)."""
+    import torch
+
     if prefer_cuda and torch.cuda.is_available():
         return torch.device("cuda")
     return torch.device("cpu")

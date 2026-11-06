@@ -1,0 +1,27 @@
+# Deployed: server.py, src/, models/onnx/, results/*.json, public/ (+ config).
+# Everything below is for training/development only. Python functions are not
+# tree-shaken, so anything left here would be shipped inside the function.
+models/*.pth
+models/*.pth.tmp
+Dataset/
+brain-tumor-mri-dataset/
+notebooks/
+tests/
+scripts/
+results/plots/
+results/experiments/
+app.py
+train.py
+evaluate.py
+compare.py
+predict.py
+requirements-train.txt
+requirements-dev.txt
+requirements-gradio.txt
+pytest.ini
+.github/
+*.ipynb
+**/__pycache__/
+.pytest_cache/
+.venv/
+venv/

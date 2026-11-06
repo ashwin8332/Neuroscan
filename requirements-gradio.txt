@@ -1,3 +1,4 @@
 # Optional alternative UI (app.py)
 -r requirements.txt
+pandas>=2.1
 gradio>=4.44

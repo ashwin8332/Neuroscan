@@ -9,7 +9,16 @@
   const css = getComputedStyle(document.documentElement);
   const COLORS = Object.fromEntries(CLASSES.map((c) => [c, css.getPropertyValue(`--${c}`).trim()]));
   const LABELS = { glioma: "Glioma", meningioma: "Meningioma", notumor: "No tumor", pituitary: "Pituitary" };
-  const ACCEPTED_TYPES = ["image/jpeg", "image/png"];
+  const ACCEPTED_TYPES = ["image/jpeg", "image/png", "image/webp", "image/bmp"];
+  const ACCEPTED_EXTENSIONS = /\.(jpe?g|png|webp|bmp)$/i;
+  // Platform errors (e.g. Vercel's edge) arrive as HTML/text, not JSON.
+  const STATUS_MESSAGES = {
+    413: () => `The file is too large (limit ${state.maxUploadMb} MB).`,
+    429: () => "Too many requests. Please wait a moment and try again.",
+    502: () => "The analysis service is unavailable. Please try again in a moment.",
+    503: () => "The analysis service is starting up or unavailable. Please try again in a moment.",
+    504: () => "The analysis took too long and timed out. Please try again.",
+  };
 
   const state = {
     status: null,
@@ -60,7 +69,13 @@
     }
     let data = null;
     try { data = await res.json(); } catch { /* non-JSON error page */ }
-    if (!res.ok) throw new Error((data && (data.error || data.detail)) || `Request failed (${res.status})`);
+    if (!res.ok) {
+      const fallback = STATUS_MESSAGES[res.status] ? STATUS_MESSAGES[res.status]() : `Request failed (${res.status})`;
+      const error = new Error((data && typeof data.error === "string" && data.error) || fallback);
+      error.status = res.status;
+      throw error;
+    }
+    if (data === null) throw new Error("The server sent an unexpected response.");
     return data;
   }
 
@@ -108,13 +123,16 @@
   }
 
   /* ------------------------------------------------------------ status */
-  async function loadStatus() {
+  async function loadStatus(attempt = 1) {
     const chip = $("#chip-engine");
     try {
       state.status = await fetchJSON("/api/status");
       const s = state.status;
+      chip.classList.remove("is-error");
       chip.classList.add("is-ok");
-      $("#status-engine").textContent = `Engine ${s.device.toUpperCase()}${s.tta ? " · TTA" : ""}`;
+      showInputError("");
+      const engine = [s.backend && s.backend !== "none" ? s.backend.toUpperCase() : null, String(s.device || "cpu").toUpperCase()];
+      $("#status-engine").textContent = `Engine ${engine.filter(Boolean).join(" · ")}${s.tta ? " · TTA" : ""}`;
       $("#status-models").textContent = `${s.loaded_models}/${s.total_models} models`;
       if (s.disclaimer) $("#disclaimer-text").textContent = s.disclaimer;
       if (s.max_upload_mb) {
@@ -122,10 +140,14 @@
         $("#max-upload").textContent = String(s.max_upload_mb);
       }
       if (s.loaded_models === 0) {
-        showInputError("No trained model checkpoints are installed on the server. Train models (python train.py) or copy checkpoints into models/.");
+        showInputError("No trained models are installed on the server. Train models, then export them with scripts/export_onnx.py.");
       }
       renderGuide(true);
     } catch (err) {
+      if (attempt < 2) {  // serverless cold starts can fail the very first call
+        setTimeout(() => loadStatus(attempt + 1), 2500);
+        return;
+      }
       chip.classList.add("is-error");
       $("#status-engine").textContent = "Engine offline";
       showInputError(err.message);
@@ -136,9 +158,10 @@
   async function loadSamples() {
     const box = $("#samples");
     try {
-      const { samples } = await fetchJSON("/api/samples");
+      // Static file served by the CDN: no serverless call needed.
+      const { samples } = await fetchJSON("/samples/index.json");
       box.replaceChildren();
-      if (!samples.length) {
+      if (!Array.isArray(samples) || !samples.length) {
         box.append(el("p", { class: "hint", text: "No sample scans found." }));
         return;
       }
@@ -200,8 +223,13 @@
   function chooseFile(file) {
     showInputError("");
     if (!file) return;
-    if (!ACCEPTED_TYPES.includes(file.type)) {
-      showInputError(`"${file.name}" is not a JPEG or PNG image.`);
+    const typeOk = file.type ? ACCEPTED_TYPES.includes(file.type) : ACCEPTED_EXTENSIONS.test(file.name || "");
+    if (!typeOk) {
+      showInputError(`"${file.name}" is not a JPEG, PNG, WebP or BMP image.`);
+      return;
+    }
+    if (file.size === 0) {
+      showInputError(`"${file.name}" is empty.`);
       return;
     }
     if (file.size > state.maxUploadMb * 1024 * 1024) {
@@ -216,11 +244,23 @@
     setPreview(state.previewUrl, `${file.name} · ${(file.size / 1024).toFixed(0)} KB`);
   }
 
-  function chooseSample(sample, button) {
-    if (state.previewUrl) URL.revokeObjectURL(state.previewUrl);
-    Object.assign(state, { file: null, previewUrl: null, sampleId: sample.id });
+  async function chooseSample(sample, button) {
+    showInputError("");
     document.querySelectorAll(".sample").forEach((b) => b.setAttribute("aria-pressed", String(b === button)));
-    setPreview(sample.path, `sample · ${sample.id}`);
+    let blob;
+    try {
+      const res = await fetch(sample.path);
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      blob = await res.blob();
+    } catch (err) {
+      showInputError(`Could not load the sample scan (${err.message}).`);
+      return;
+    }
+    // Uploaded exactly like a user's file, so samples and uploads share one path.
+    if (state.previewUrl) URL.revokeObjectURL(state.previewUrl);
+    const file = new File([blob], sample.filename, { type: blob.type || "image/jpeg" });
+    Object.assign(state, { file, sampleId: sample.id, previewUrl: URL.createObjectURL(blob) });
+    setPreview(state.previewUrl, `sample · ${sample.id}`);
     analyze();
   }
 
@@ -251,7 +291,7 @@
     inFlight = controller;
 
     const form = new FormData();
-    if (state.file) form.append("file", state.file);
+    if (state.file) form.append("file", state.file, state.file.name || "scan");
     else form.append("sample_id", state.sampleId);
 
     showInputError("");

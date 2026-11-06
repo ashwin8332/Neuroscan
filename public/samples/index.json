@@ -1,0 +1,76 @@
+{
+  "samples": [
+    {
+      "id": "glioma/Te-gl_1.jpg",
+      "class": "glioma",
+      "filename": "Te-gl_1.jpg",
+      "path": "/samples/glioma/Te-gl_1.jpg"
+    },
+    {
+      "id": "glioma/Te-gl_10.jpg",
+      "class": "glioma",
+      "filename": "Te-gl_10.jpg",
+      "path": "/samples/glioma/Te-gl_10.jpg"
+    },
+    {
+      "id": "glioma/Te-gl_100.jpg",
+      "class": "glioma",
+      "filename": "Te-gl_100.jpg",
+      "path": "/samples/glioma/Te-gl_100.jpg"
+    },
+    {
+      "id": "meningioma/Te-aug-me_1.jpg",
+      "class": "meningioma",
+      "filename": "Te-aug-me_1.jpg",
+      "path": "/samples/meningioma/Te-aug-me_1.jpg"
+    },
+    {
+      "id": "meningioma/Te-aug-me_10.jpg",
+      "class": "meningioma",
+      "filename": "Te-aug-me_10.jpg",
+      "path": "/samples/meningioma/Te-aug-me_10.jpg"
+    },
+    {
+      "id": "meningioma/Te-aug-me_100.jpg",
+      "class": "meningioma",
+      "filename": "Te-aug-me_100.jpg",
+      "path": "/samples/meningioma/Te-aug-me_100.jpg"
+    },
+    {
+      "id": "notumor/Te-no_1.jpg",
+      "class": "notumor",
+      "filename": "Te-no_1.jpg",
+      "path": "/samples/notumor/Te-no_1.jpg"
+    },
+    {
+      "id": "notumor/Te-no_10.jpg",
+      "class": "notumor",
+      "filename": "Te-no_10.jpg",
+      "path": "/samples/notumor/Te-no_10.jpg"
+    },
+    {
+      "id": "notumor/Te-no_100.jpg",
+      "class": "notumor",
+      "filename": "Te-no_100.jpg",
+      "path": "/samples/notumor/Te-no_100.jpg"
+    },
+    {
+      "id": "pituitary/Te-pi_1.jpg",
+      "class": "pituitary",
+      "filename": "Te-pi_1.jpg",
+      "path": "/samples/pituitary/Te-pi_1.jpg"
+    },
+    {
+      "id": "pituitary/Te-pi_10.jpg",
+      "class": "pituitary",
+      "filename": "Te-pi_10.jpg",
+      "path": "/samples/pituitary/Te-pi_10.jpg"
+    },
+    {
+      "id": "pituitary/Te-pi_100.jpg",
+      "class": "pituitary",
+      "filename": "Te-pi_100.jpg",
+      "path": "/samples/pituitary/Te-pi_100.jpg"
+    }
+  ]
+}

@@ -1,3 +1,7 @@
+import pytest
+
+pytest.importorskip("torch")  # PyTorch tests are skipped in the serving-only (Vercel) environment
+
 from pathlib import Path
 
 import numpy as np

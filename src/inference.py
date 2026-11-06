@@ -1,174 +1,98 @@
 """Inference service shared by the FastAPI server, the Gradio app and the CLI.
 
-Fixes relative to the original implementation:
-* only models with a real checkpoint are loaded - a missing ViT checkpoint no
-  longer turns into a randomly initialised network that votes in the consensus;
-* each model uses the preprocessing and calibration temperature stored in its
-  checkpoint, plus optional flip test-time augmentation;
-* the ensemble is reliability-weighted and reports when it is uncertain;
-* Grad-CAM is computed natively (no OpenCV / grad-cam dependency), for the most
-  reliable CNN and for the class the *ensemble* predicted, and is thread-safe.
+Backends
+--------
+* **onnx** (default when ``models/onnx/manifest.json`` exists): ONNX Runtime,
+  no PyTorch needed. This is what the Vercel deployment runs.
+* **torch**: the PyTorch checkpoints in ``models/`` (local development).
+
+Choose with ``InferenceService(backend=...)`` or ``NEUROSCAN_BACKEND``
+(``auto`` | ``onnx`` | ``torch``). This module imports no PyTorch at load time.
+
+Behaviour (unchanged across backends): only models with a real checkpoint are
+used, each with its own preprocessing and calibration temperature, flip TTA,
+a reliability-weighted ensemble with an explicit "inconclusive" state, and
+Grad-CAM from the most reliable CNN explaining that model's own prediction.
 """
 from __future__ import annotations
 
-import base64
-import io
+import importlib.util
 import json
 import logging
+import os
 import threading
 import time
-from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Union
+from typing import Any, Dict, Optional
 
 import numpy as np
-import torch
-import torch.nn as nn
-import torch.nn.functional as F
 from PIL import Image
 
-from .config import CLASS_METADATA, CLASS_NAMES, MEDICAL_DISCLAIMER, MODELS_DIR, RESULTS_DIR, get_device
-from .data import get_test_transforms
+from .config import CLASS_METADATA, CLASS_NAMES, MEDICAL_DISCLAIMER, MODEL_SPECS, MODELS_DIR, ONNX_DIR, RESULTS_DIR
 from .ensemble import assess_uncertainty, reliability_weight, weighted_average
-from .models import MODEL_REGISTRY, CheckpointInfo, gradcam_target_layer, load_model_from_checkpoint
-from .preprocessing import LEGACY_PREPROCESS, PreprocessConfig, assess_image_quality, preprocess_image
-
-logger = logging.getLogger(__name__)
-ImageInput = Union[str, Path, Image.Image, np.ndarray]
-
-
-def to_pil(image_input: ImageInput) -> Image.Image:
-    if isinstance(image_input, (str, Path)):
-        with Image.open(image_input) as img:
-            return img.convert("RGB")
-    if isinstance(image_input, np.ndarray):
-        return Image.fromarray(image_input).convert("RGB")
-    if isinstance(image_input, Image.Image):
-        return image_input.convert("RGB")
-    raise ValueError(f"Unsupported image type: {type(image_input)}")
-
-
-# --------------------------------------------------------------------------- #
-# Grad-CAM
-# --------------------------------------------------------------------------- #
-def compute_gradcam(model: nn.Module, input_tensor: torch.Tensor, class_idx: int) -> Optional[np.ndarray]:
-    """Grad-CAM (Selvaraju et al. 2017) -> heatmap in [0, 1] at input resolution."""
-    layer = gradcam_target_layer(model)
-    if layer is None:
-        return None
-    store: Dict[str, torch.Tensor] = {}
-
-    def forward_hook(_module, _inputs, output):
-        store["activations"] = output
-        output.register_hook(lambda grad: store.__setitem__("gradients", grad))
-
-    handle = layer.register_forward_hook(forward_hook)
-    try:
-        model.zero_grad(set_to_none=True)
-        with torch.enable_grad():
-            logits = model(input_tensor.detach().clone().requires_grad_(True))
-            logits[0, class_idx].backward()
-        activations = store["activations"].detach()[0]
-        gradients = store["gradients"].detach()[0]
-    finally:
-        handle.remove()
-        model.zero_grad(set_to_none=True)
-
-    weights = gradients.mean(dim=(1, 2))
-    cam = F.relu((weights[:, None, None] * activations).sum(dim=0))
-    if float(cam.max()) <= 1e-8:
-        return np.zeros(input_tensor.shape[-2:], dtype=np.float32)
-    cam = cam / cam.max()
-    cam = F.interpolate(cam[None, None], size=input_tensor.shape[-2:], mode="bilinear", align_corners=False)[0, 0]
-    return cam.cpu().numpy().astype(np.float32)
-
-
-_COLORMAP_ANCHORS = np.array(
-    [[0.00, 0, 0, 128], [0.25, 0, 96, 255], [0.50, 0, 220, 200], [0.75, 255, 210, 0], [1.00, 220, 20, 20]],
-    dtype=np.float32,
+from .preprocessing import assess_image_quality, preprocess_image
+from .runtime import (  # noqa: F401  (re-exported helpers)
+    ImageInput,
+    ServingModel,
+    colorize,
+    heatmap_rgba,
+    load_image,
+    load_onnx_models,
+    onnx_runtime_available,
+    overlay,
+    to_data_uri,
 )
 
+__all__ = [
+    "InferenceService", "ImageInput", "ServingModel", "colorize", "heatmap_rgba", "load_image",
+    "overlay", "to_data_uri", "to_pil",
+]
 
-def colorize(heatmap: np.ndarray) -> np.ndarray:
-    """Map [0,1] -> RGB uint8 with a perceptually ordered blue->cyan->yellow->red ramp."""
-    flat = heatmap.ravel()
-    channels = [np.interp(flat, _COLORMAP_ANCHORS[:, 0], _COLORMAP_ANCHORS[:, i]) for i in (1, 2, 3)]
-    return np.stack(channels, axis=-1).reshape(*heatmap.shape, 3).astype(np.uint8)
+logger = logging.getLogger(__name__)
 
-
-def heatmap_rgba(heatmap: np.ndarray) -> Image.Image:
-    """Transparent where attention is low so the browser can blend it over the scan."""
-    rgb = colorize(heatmap)
-    alpha = (np.clip(heatmap, 0, 1) ** 0.8 * 255).astype(np.uint8)
-    return Image.fromarray(np.dstack([rgb, alpha]), mode="RGBA")
+BACKENDS = ("auto", "onnx", "torch")
+_LEGACY_TORCH_API = {"compute_gradcam", "prepare_image", "predict_single_image",
+                     "generate_gradcam_overlay", "get_available_trained_models", "TorchModel"}
 
 
-def overlay(image: Image.Image, heatmap: np.ndarray, strength: float = 0.45) -> Image.Image:
-    base = np.asarray(image.convert("RGB").resize(heatmap.shape[::-1]), dtype=np.float32)
-    colored = colorize(heatmap).astype(np.float32)
-    alpha = (strength * np.clip(heatmap, 0, 1))[..., None]
-    return Image.fromarray(((1 - alpha) * base + alpha * colored).clip(0, 255).astype(np.uint8))
+def __getattr__(name: str):
+    """Lazily expose the old PyTorch-based helpers without importing torch eagerly."""
+    if name in _LEGACY_TORCH_API:
+        from . import torch_backend
+
+        return getattr(torch_backend, name)
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 
-def to_data_uri(image: Image.Image, fmt: str = "JPEG") -> str:
-    buffer = io.BytesIO()
-    if fmt == "JPEG":
-        image.convert("RGB").save(buffer, format="JPEG", quality=90)
-        mime = "image/jpeg"
-    else:
-        image.save(buffer, format="PNG", optimize=True)
-        mime = "image/png"
-    return f"data:{mime};base64,{base64.b64encode(buffer.getvalue()).decode('ascii')}"
+def to_pil(image_input: ImageInput) -> Image.Image:  # backwards-compatible name
+    return load_image(image_input)
 
 
-# --------------------------------------------------------------------------- #
-# Loaded model wrapper
-# --------------------------------------------------------------------------- #
-@dataclass
-class LoadedModel:
-    key: str
-    display_name: str
-    description: str
-    module: nn.Module
-    info: CheckpointInfo
-    checkpoint_path: Path
-    weight: float
-
-    def __post_init__(self) -> None:
-        self.transform = get_test_transforms(self.info.preprocess.image_size, self.info.preprocess)
-
-    @property
-    def preprocess(self) -> PreprocessConfig:
-        return self.info.preprocess
-
-    def input_tensor(self, image: Image.Image, device: torch.device) -> torch.Tensor:
-        return self.transform(image).unsqueeze(0).to(device)
-
-    @torch.no_grad()
-    def probabilities(self, image: Image.Image, device: torch.device, tta: bool = True) -> np.ndarray:
-        x = self.input_tensor(image, device)
-        logits = self.module(x)
-        if tta:
-            logits = 0.5 * (logits + self.module(torch.flip(x, dims=[3])))
-        return F.softmax(logits / self.info.temperature, dim=1)[0].cpu().numpy()
+def _torch_available() -> bool:
+    # find_spec avoids importing PyTorch (seconds) just to check that it exists.
+    return importlib.util.find_spec("torch") is not None
 
 
-# --------------------------------------------------------------------------- #
-# Service
-# --------------------------------------------------------------------------- #
 class InferenceService:
     def __init__(
         self,
         models_dir: Path = MODELS_DIR,
-        device: Optional[torch.device] = None,
+        device: Any = None,
         benchmark_path: Optional[Path] = RESULTS_DIR / "model_comparison_metrics.json",
         tta: bool = True,
+        backend: Optional[str] = None,
+        onnx_dir: Optional[Path] = None,
     ):
         self.models_dir = Path(models_dir)
-        self.device = device or get_device()
+        self.onnx_dir = Path(onnx_dir) if onnx_dir else (self.models_dir / "onnx" if models_dir != MODELS_DIR else ONNX_DIR)
+        self.device = device
         self.benchmark_path = benchmark_path
         self.tta = tta
-        self.models: Dict[str, LoadedModel] = {}
+        self.backend_preference = (backend or os.environ.get("NEUROSCAN_BACKEND", "auto")).lower()
+        if self.backend_preference not in BACKENDS:
+            raise ValueError(f"backend must be one of {BACKENDS}, got {self.backend_preference!r}")
+        self.backend = "none"
+        self.models: Dict[str, ServingModel] = {}
         self.unavailable: Dict[str, str] = {}
         self._lock = threading.RLock()
 
@@ -177,43 +101,62 @@ class InferenceService:
         if self.benchmark_path and Path(self.benchmark_path).exists():
             try:
                 with open(self.benchmark_path) as f:
-                    return json.load(f)
+                    data = json.load(f)
+                return data if isinstance(data, dict) else {}
             except (OSError, json.JSONDecodeError):
                 logger.warning("Could not read %s", self.benchmark_path)
         return {}
 
+    def _select_backend(self) -> str:
+        has_onnx = (self.onnx_dir / "manifest.json").is_file()
+        if self.backend_preference == "onnx":
+            return "onnx"
+        if self.backend_preference == "torch":
+            return "torch"
+        if has_onnx and onnx_runtime_available():
+            return "onnx"
+        if _torch_available():
+            return "torch"
+        return "onnx" if has_onnx else "none"
+
     def load(self) -> "InferenceService":
-        """(Re)load every available checkpoint. Builds a new registry, then swaps it
-        in atomically so in-flight requests never see a half-loaded state."""
-        models: Dict[str, LoadedModel] = {}
-        unavailable: Dict[str, str] = {}
-        benchmark = self._benchmark()
-        for key, spec in MODEL_REGISTRY.items():
-            path = self.models_dir / spec["checkpoint"]
-            if not path.exists():
-                unavailable[key] = f"checkpoint {spec['checkpoint']} not found"
-                continue
+        """(Re)load all models. Builds a new registry, then swaps it in atomically
+        so in-flight requests never see a half-loaded state. Never raises for
+        missing or broken model files - they are reported as unavailable."""
+        backend = self._select_backend()
+        if backend == "onnx":
+            if onnx_runtime_available():
+                models, unavailable = load_onnx_models(self.onnx_dir)
+            else:
+                models, unavailable = {}, {k: "onnxruntime is not installed" for k in MODEL_SPECS}
+        elif backend == "torch":
             try:
-                module, info = load_model_from_checkpoint(key, path, self.device)
-            except Exception as exc:  # corrupt / incompatible file: skip, never crash the app
-                logger.exception("Failed to load %s", path)
-                unavailable[key] = f"failed to load: {exc.__class__.__name__}"
-                continue
-            weight = reliability_weight(info.val_metrics, benchmark.get(key))
-            models[key] = LoadedModel(key, spec["display_name"], spec["description"], module, info, path, weight)
-            logger.info("Loaded %s (%s, T=%.2f, weight=%.2f)", spec["display_name"], info.arch, info.temperature, weight)
+                from .torch_backend import load_torch_models
+            except ImportError as exc:  # PyTorch missing or broken
+                logger.error("PyTorch backend unavailable: %s", exc)
+                models, unavailable = {}, {k: "PyTorch is not installed" for k in MODEL_SPECS}
+            else:
+                models, unavailable = load_torch_models(self.models_dir, self.device)
+        else:
+            models, unavailable = {}, {k: "no model backend available (install onnxruntime)" for k in MODEL_SPECS}
+
+        benchmark = self._benchmark()
+        for key, model in models.items():
+            model.weight = reliability_weight(model.val_metrics, benchmark.get(key))
+            logger.info("Loaded %s via %s (%s, T=%.2f, weight=%.2f)", model.display_name, backend,
+                        model.arch, model.temperature, model.weight)
         with self._lock:
-            self.models, self.unavailable = models, unavailable
+            self.models, self.unavailable, self.backend = models, unavailable, backend
         return self
 
     # ---------------------------------------------------------------- status
     def status(self) -> Dict[str, Any]:
         with self._lock:
-            loaded, unavailable = dict(self.models), dict(self.unavailable)
+            loaded, unavailable, backend = dict(self.models), dict(self.unavailable), self.backend
         total_weight = sum(m.weight for m in loaded.values()) or 1.0
         rows = []
-        for key, spec in MODEL_REGISTRY.items():
-            row = {
+        for key, spec in MODEL_SPECS.items():
+            row: Dict[str, Any] = {
                 "key": key,
                 "display_name": spec["display_name"],
                 "description": spec["description"],
@@ -222,47 +165,47 @@ class InferenceService:
             }
             if key in loaded:
                 m = loaded[key]
-                params = sum(p.numel() for p in m.module.parameters())
-                row.update({
-                    "checkpoint_size_mb": round(m.checkpoint_path.stat().st_size / 2**20, 2),
-                    "parameters_total": params,
-                    "ensemble_weight": round(m.weight / total_weight, 4),
-                    "supports_gradcam": gradcam_target_layer(m.module) is not None,
-                    **m.info.to_public_dict(),
-                })
+                row.update({"ensemble_weight": round(m.weight / total_weight, 4), **m.public_info()})
             else:
                 row["unavailable_reason"] = unavailable.get(key, "not loaded")
             rows.append(row)
+        device = "cpu" if backend == "onnx" else str(self.device or "cpu")
         return {
-            "device": str(self.device),
+            "backend": backend,
+            "device": device,
             "tta": self.tta,
             "classes": CLASS_NAMES,
             "class_metadata": CLASS_METADATA,
             "models": rows,
             "loaded_models": len(loaded),
-            "total_models": len(MODEL_REGISTRY),
+            "total_models": len(MODEL_SPECS),
             "disclaimer": MEDICAL_DISCLAIMER,
         }
 
     # ---------------------------------------------------------------- predict
-    def _gradcam_model(self, models: Dict[str, LoadedModel]) -> Optional[LoadedModel]:
-        candidates = [m for m in models.values() if gradcam_target_layer(m.module) is not None]
+    @staticmethod
+    def _gradcam_model(models: Dict[str, ServingModel]) -> Optional[ServingModel]:
+        candidates = [m for m in models.values() if m.supports_gradcam]
         return max(candidates, key=lambda m: m.weight) if candidates else None
 
     def predict(self, image: ImageInput, with_gradcam: bool = True) -> Dict[str, Any]:
         start = time.perf_counter()
-        pil = to_pil(image)
+        pil = load_image(image)
         quality = assess_image_quality(pil)
         with self._lock:
             models = dict(self.models)
             unavailable = dict(self.unavailable)
             if not models:
-                raise RuntimeError("No trained model checkpoints are available on the server.")
+                raise RuntimeError("No trained models are available on the server.")
 
             per_model, prob_rows, weights, votes = [], [], [], []
             own_prediction: Dict[str, int] = {}
             for key, m in models.items():
-                probs = m.probabilities(pil, self.device, self.tta)
+                probs = np.asarray(m.analyze(pil, self.tta), dtype=np.float64)
+                if probs.shape != (len(CLASS_NAMES),) or not np.all(np.isfinite(probs)):
+                    logger.error("%s returned invalid probabilities %s", key, probs)
+                    unavailable[key] = "returned invalid output"
+                    continue
                 idx = int(np.argmax(probs))
                 own_prediction[key] = idx
                 meta = CLASS_METADATA[CLASS_NAMES[idx]]
@@ -279,11 +222,13 @@ class InferenceService:
                     "severity": meta["severity"],
                     "description": meta["simple_summary"],
                     "weight": m.weight,
-                    "temperature": round(m.info.temperature, 3),
-                    "calibrated": abs(m.info.temperature - 1.0) > 1e-6,
-                    "legacy_checkpoint": m.info.is_legacy,
+                    "temperature": round(m.temperature, 3),
+                    "calibrated": abs(m.temperature - 1.0) > 1e-6,
+                    "legacy_checkpoint": m.is_legacy,
                     "is_checkpoint_loaded": True,
                 })
+            if not per_model:
+                raise RuntimeError("No model produced a valid prediction.")
 
             ensemble = weighted_average(prob_rows, weights)
             verdict = assess_uncertainty(ensemble, votes, weights)
@@ -292,7 +237,7 @@ class InferenceService:
                 row["weight"] = round(row["weight"] / total_weight, 4)
 
             gradcam = None
-            cam_model = self._gradcam_model(models) if with_gradcam else None
+            cam_model = self._gradcam_model({k: m for k, m in models.items() if k in own_prediction}) if with_gradcam else None
             if cam_model is not None:
                 # Explain what this model itself predicted: a heatmap for a class
                 # the model did not choose is hard to interpret.
@@ -301,9 +246,9 @@ class InferenceService:
         return self._build_response(pil, quality, per_model, ensemble, verdict, gradcam, unavailable,
                                     (time.perf_counter() - start) * 1000.0)
 
-    def _gradcam_payload(self, m: LoadedModel, pil: Image.Image, class_idx: int) -> Optional[Dict[str, Any]]:
+    def _gradcam_payload(self, m: ServingModel, pil: Image.Image, class_idx: int) -> Optional[Dict[str, Any]]:
         try:
-            heat = compute_gradcam(m.module, m.input_tensor(pil, self.device), class_idx)
+            heat = m.explain(pil, class_idx)
         except Exception:  # explainability must never break a prediction
             logger.exception("Grad-CAM failed for %s", m.key)
             return None
@@ -327,7 +272,7 @@ class InferenceService:
         warnings = list(quality["warnings"])
 
         if verdict["inconclusive"]:
-            title = "Inconclusive \u2014 expert review needed"
+            title = "Inconclusive — expert review needed"
             summary = (
                 f"The AI models could not reach a confident result for this scan "
                 f"({'; '.join(verdict['reasons'])}). The most likely pattern is "
@@ -365,6 +310,7 @@ class InferenceService:
         fallback_view = to_data_uri(pil.resize((224, 224)))
         return {
             "success": True,
+            "backend": self.backend,
             "consensus_prediction": top,
             "consensus_display_name": title,
             "consensus_confidence": round(verdict["probability"] * 100.0, 2),
@@ -381,7 +327,7 @@ class InferenceService:
             "categories_guide": guide,
             "model_results": per_model,
             "unavailable_models": [
-                {"model_key": k, "display_name": MODEL_REGISTRY[k]["display_name"], "reason": reason}
+                {"model_key": k, "display_name": MODEL_SPECS[k]["display_name"], "reason": reason}
                 for k, reason in unavailable.items()
             ],
             "gradcam": gradcam,
@@ -393,54 +339,3 @@ class InferenceService:
             "disclaimer": MEDICAL_DISCLAIMER,
             "inference_ms": round(elapsed_ms, 1),
         }
-
-
-# --------------------------------------------------------------------------- #
-# Backwards-compatible functional API
-# --------------------------------------------------------------------------- #
-def prepare_image(image_input: ImageInput, preprocess: PreprocessConfig = LEGACY_PREPROCESS):
-    pil = to_pil(image_input)
-    return get_test_transforms(preprocess.image_size, preprocess)(pil).unsqueeze(0), pil
-
-
-def predict_single_image(
-    model: nn.Module,
-    image_input: ImageInput,
-    device: torch.device,
-    class_names: List[str] = CLASS_NAMES,
-    preprocess: PreprocessConfig = LEGACY_PREPROCESS,
-    temperature: float = 1.0,
-) -> Dict[str, Any]:
-    tensor, _ = prepare_image(image_input, preprocess)
-    model.eval()
-    with torch.no_grad():
-        probs = F.softmax(model(tensor.to(device)) / temperature, dim=1)[0].cpu().numpy()
-    idx = int(np.argmax(probs))
-    return {
-        "predicted_class": class_names[idx],
-        "confidence": float(probs[idx]),
-        "confidences": {class_names[i]: float(p) for i, p in enumerate(probs)},
-    }
-
-
-def generate_gradcam_overlay(
-    model: nn.Module,
-    image_input: ImageInput,
-    device: torch.device,
-    target_category: Optional[int] = None,
-    preprocess: PreprocessConfig = LEGACY_PREPROCESS,
-) -> Optional[np.ndarray]:
-    tensor, pil = prepare_image(image_input, preprocess)
-    tensor = tensor.to(device)
-    if target_category is None:
-        with torch.no_grad():
-            target_category = int(model(tensor).argmax(dim=1))
-    heat = compute_gradcam(model, tensor, target_category)
-    if heat is None:
-        return None
-    return np.asarray(overlay(preprocess_image(pil, preprocess), heat))
-
-
-def get_available_trained_models(device: Optional[torch.device] = None, models_dir: Path = MODELS_DIR) -> Dict[str, nn.Module]:
-    service = InferenceService(models_dir=models_dir, device=device, benchmark_path=None).load()
-    return {m.display_name: m.module for m in service.models.values()}

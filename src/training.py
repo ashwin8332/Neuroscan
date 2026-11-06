@@ -18,7 +18,6 @@ What changed versus the original loop and why
 from __future__ import annotations
 
 import copy
-import json
 import logging
 import math
 import random
@@ -37,6 +36,7 @@ from tqdm import tqdm
 from .calibration import fit_temperature, nll
 from .config import RESULTS_DIR, SEED, TrainRecipe
 from .data import DataBundle
+from .jsonutil import write_json
 from .metrics import collect_logits, expected_calibration_error
 from .models import (
     MODEL_REGISTRY,
@@ -233,6 +233,15 @@ def train_model(
             best.update(loss=val["loss"], epoch=epoch, metrics=val,
                         state={k: v.detach().cpu().clone() for k, v in eval_model.state_dict().items()})
             epochs_without_improvement = 0
+            # Persist the best weights immediately (uncalibrated, T=1) so an
+            # interrupted run - e.g. a Colab disconnect - still leaves a usable
+            # checkpoint. It is overwritten by the calibrated one at the end.
+            save_checkpoint(
+                output_path, eval_model, key, arch, preprocess, temperature=1.0,
+                val_metrics={"val_loss": round(val["loss"], 4), "val_acc": round(val["acc"], 4),
+                             "val_macro_f1": round(val["macro_f1"], 4), "best_epoch": epoch, "interim": True},
+                train_config={"recipe": recipe.to_dict(), "seed": seed, "arch": arch}, epoch=epoch,
+            )
         else:
             epochs_without_improvement += 1
 
@@ -285,8 +294,7 @@ def train_model(
     })
     results_dir = Path(results_dir)
     results_dir.mkdir(parents=True, exist_ok=True)
-    with open(results_dir / f"{key}_history.json", "w") as f:
-        json.dump(history, f, indent=2)
+    write_json(results_dir / f"{key}_history.json", history)
 
     logger.info("Best epoch %d | val loss %.4f | T=%.3f | val ECE %.4f -> %.4f | saved %s",
                 best["epoch"], best["loss"], temperature, val_metrics["val_ece"],

@@ -1,18 +1,9 @@
-# Core ML. torch>=2.6 fixes CVE-2025-32434 (code execution via torch.load).
-torch>=2.6,<3
-torchvision>=0.21,<1
-numpy>=1.26
-scipy>=1.11
-scikit-learn>=1.4
-pandas>=2.1
-pillow>=10.3
-tqdm>=4.66
-
-# Figures (compare.py, notebooks)
-matplotlib>=3.8
-seaborn>=0.13
-
-# Web app (server.py)
-fastapi>=0.110
-uvicorn[standard]>=0.29
-python-multipart>=0.0.9
+# Web app / inference (server.py). This is also what Vercel installs, so it
+# must stay small: models run on ONNX Runtime, not PyTorch. Keep in sync with
+# [project].dependencies in pyproject.toml (tests/test_deployment.py checks it).
+fastapi>=0.110,<1
+python-multipart>=0.0.9,<1
+numpy>=1.26,<3
+pillow>=10.3,<14
+onnxruntime>=1.18,<2
+uvicorn>=0.29,<1

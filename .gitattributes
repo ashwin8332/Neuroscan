@@ -1,2 +1,11 @@
 # Auto detect text files and perform LF normalization
 * text=auto
+
+# Model weights, images and fonts: never normalise line endings, diff or merge
+*.onnx binary
+*.pth binary
+*.pt binary
+*.jpg binary
+*.jpeg binary
+*.png binary
+*.woff2 binary
