@@ -147,18 +147,23 @@ All numbers, per-epoch histories and the figure are in
 
 ```bash
 python -m venv .venv && source .venv/bin/activate      # Windows: .venv\Scripts\activate
-pip install -r requirements.txt
+pip install -r requirements.txt                         # web app only: ONNX Runtime, no PyTorch
 python server.py                                        # http://127.0.0.1:8000
 ```
 
-With `uv`: `uv venv && uv pip install -r requirements.txt && uv run python server.py`.
+With `uv`: `uv run python server.py` (dependencies come from `pyproject.toml`).
 
-The repository ships the original Custom CNN, ResNet-18 and MobileNetV3 checkpoints, so the
-app works immediately. The ViT checkpoint (330 MB) is git-ignored and is reported as
-unavailable rather than guessed. **Retrain with the new pipeline to get calibrated models**
-(section 5); the app picks up new checkpoints automatically.
+The app serves the ONNX exports in `models/onnx/` of the original Custom CNN, ResNet-18 and
+MobileNetV3, so it works immediately. The ViT is not deployed (see section 6) and is reported
+as unavailable rather than guessed. **Retrain with the new pipeline to get calibrated models**
+(section 5).
 
 ## 5. Training and evaluation
+
+```bash
+pip install -r requirements-train.txt     # adds PyTorch, scikit-learn, SciPy, plotting
+# uv: uv run --extra train python train.py ...
+```
 
 Place the [Kaggle Brain Tumor MRI dataset](https://www.kaggle.com/datasets/masoudnickparvar/brain-tumor-mri-dataset)
 in `Dataset/brain-tumor-mri-dataset/{Training,Testing}`, or pass `--data-dir` / set
@@ -172,7 +177,8 @@ python train.py --model custom_cnn --subset-fraction 0.1 --epochs 2   # quick sm
 python evaluate.py --tta                                 # test set, per-model + weighted ensemble
 python evaluate.py --tta --exclude-leaked --results-dir results/leakage_free
 python compare.py                                        # figures in results/plots/
-python predict.py sample_scans/glioma/Te-gl_10.jpg       # CLI prediction (add --json)
+python scripts/export_onnx.py                            # REQUIRED before deploying: refresh models/onnx/
+python predict.py public/samples/glioma/Te-gl_10.jpg     # CLI prediction (add --json)
 ```
 
 No GPU? `notebooks/Brain_Tumor_Colab_Training.ipynb` clones this repository and runs the same
@@ -181,8 +187,44 @@ loads ImageNet weights from disk.
 
 Each run writes `models/<name>.pth` (with preprocessing, temperature and validation metrics)
 and `results/<name>_history.json` (per-epoch curves, split report, generalisation gap).
+`scripts/export_onnx.py` converts the checkpoints to ONNX, checks every output against
+PyTorch and records each checkpoint's SHA-256; `--check` (run by CI) fails if a checkpoint
+changed without being re-exported.
 
-## 6. Web app and API
+## 6. Deploy to Vercel
+
+The repository deploys to Vercel as-is: **one Python function** (`server.py`) for `/api/*`,
+and the static site in `public/` served from Vercel's CDN.
+
+1. Push this repository to GitHub.
+2. In Vercel: **Add New → Project → Import** the repository. Keep the root directory and leave
+   the build and output settings empty (no build step).
+3. Deploy. Open `/api/health` on the deployment URL: it should report `"backend": "onnx"`
+   and `"models_loaded": 3`.
+
+How it fits Vercel's limits:
+
+| Constraint | How the project handles it |
+|---|---|
+| Python functions are limited to 500 MB and are not tree-shaken | Inference runs on **ONNX Runtime**, not PyTorch (PyTorch alone is larger than the limit). Preprocessing is NumPy-only (no SciPy). Function bundle ~215 MB: dependencies ~160 MB + ONNX models 53 MB. `.vercelignore` keeps training checkpoints, notebooks and tests out. |
+| Several files look like an entrypoint (`app.py` is the Gradio UI) | `pyproject.toml` sets `[tool.vercel] entrypoint = "server:app"`. |
+| 4.5 MB request bodies | Uploads are capped at 4 MB on Vercel; the UI checks size first and explains edge 413/504 errors. |
+| Serverless platforms may skip ASGI lifespan events | Models load lazily and thread-safely on the first request (~2 s cold start). |
+| Read-only file system | Nothing is written at runtime. |
+| Python version | `.python-version` pins 3.12 (Vercel's default). |
+
+Sample scans are listed in the static `public/samples/index.json`; the browser fetches a
+sample from the CDN and uploads it like any user file, so the function never reads static
+files. `vercel.json` adds the same CSP and security headers to the static site that the API
+sends. Optional environment variables: `NEUROSCAN_TTA`, `NEUROSCAN_LOG_LEVEL`,
+`NEUROSCAN_MAX_UPLOAD_MB` (capped at 4 on Vercel), `NEUROSCAN_ORT_THREADS`.
+
+**Updating the deployed models:** train → `python scripts/export_onnx.py` → commit
+`models/onnx/` → push. The ViT-B/16 is excluded from the export by default: its ~330 MB ONNX
+file exceeds GitHub's 100 MB file limit and the function budget (`--include-vit` for
+self-hosting).
+
+## 7. Web app and API
 
 The Diagnose tab shows the ensemble finding with confidence level, a probability spectrum
 with the 60 % and 85 % thresholds, an inconclusive state, input warnings, Grad-CAM, and the
@@ -192,53 +234,59 @@ vendored, so the app works offline.
 
 | Endpoint | Description |
 |---|---|
-| `GET /api/health` | liveness + number of loaded models |
-| `GET /api/status` | models, calibration, ensemble weights, class metadata |
-| `GET /api/samples` | bundled sample scans |
-| `POST /api/predict` | multipart `file` (JPEG/PNG) or `sample_id` → calibrated ensemble result |
-| `GET /api/metrics` | evaluation results, histories (never fabricated) |
-| `POST /api/refresh` | reload checkpoints (localhost only) |
+| `GET /api/health` | liveness, backend, number of loaded models (also `HEAD`) |
+| `GET /api/status` | models, calibration, ensemble weights, class metadata, upload limit |
+| `GET /api/samples` | sample scans (the UI uses the static `public/samples/index.json`) |
+| `POST /api/predict` | multipart `file` (JPEG/PNG/WebP/BMP/TIFF) or `sample_id` → calibrated ensemble result |
+| `GET /api/metrics` | evaluation results and histories (strict JSON, never fabricated) |
+| `POST /api/refresh` | reload models (localhost only) |
 | `GET /api/docs` | OpenAPI UI |
 
-Configuration through environment variables: `NEUROSCAN_HOST`, `NEUROSCAN_PORT`,
-`NEUROSCAN_MAX_UPLOAD_MB` (10), `NEUROSCAN_CORS_ORIGINS` (off), `NEUROSCAN_TTA` (1),
-`NEUROSCAN_MODELS_DIR`, `NEUROSCAN_RESULTS_DIR`, `NEUROSCAN_DATA_DIR`.
-Uploads are size-limited and validated; sample ids are whitelisted; responses carry a CSP
-and other security headers. An optional Gradio UI is available via
-`pip install -r requirements-gradio.txt && python app.py`.
+Uploads are validated by content: EXIF-rotated photos are turned upright, 16-bit exports are
+rescaled instead of clipped to white, transparency is flattened onto black, multi-page files
+use the first page, and corrupt, truncated, tiny or oversized images (including decompression
+bombs) get a clear 4xx error. Every error is JSON.
 
-## 7. Tests
+Configuration through environment variables: `NEUROSCAN_HOST`, `NEUROSCAN_PORT`,
+`NEUROSCAN_MAX_UPLOAD_MB` (10, or 4 on Vercel), `NEUROSCAN_CORS_ORIGINS` (off),
+`NEUROSCAN_TTA` (1), `NEUROSCAN_BACKEND` (`auto` | `onnx` | `torch`), `NEUROSCAN_MODELS_DIR`,
+`NEUROSCAN_ONNX_DIR`, `NEUROSCAN_RESULTS_DIR`, `NEUROSCAN_DATA_DIR`. An optional Gradio UI is
+available via `pip install -r requirements-gradio.txt && python app.py`.
+
+## 8. Tests
 
 ```bash
 pip install -r requirements-dev.txt
 pytest
 ```
 
-43 tests run on synthetic MRI-like images in about 15 s: preprocessing and legacy parity,
-duplicate grouping and leak-free splits, checkpoints, calibration, ensembling, an end-to-end
-training run and the API's security behaviour. GitHub Actions runs them on every push.
+The suite covers preprocessing (including exact parity of the NumPy head-cropping with
+SciPy), leak-free splits, checkpoints, calibration, ensembling, an end-to-end training run,
+ONNX export parity (logits and Grad-CAM vs. PyTorch), the API with every image edge case,
+and the deployment configuration (what `.vercelignore` ships, entrypoint, dependency sync,
+CSP consistency, bundle budget). GitHub Actions runs three jobs on every push: the full suite
+with PyTorch; the **Vercel runtime** (Python 3.12, deployment dependencies only, PyTorch
+absent, bundle budget enforced); and the oldest supported dependency versions.
 
-## 8. Repository structure
+## 9. Repository structure
 
 ```text
-src/
-  config.py         paths, class metadata, per-model training recipes
-  preprocessing.py  head cropping, square padding, input sanity checks
-  data.py           dataset scan, near-duplicate grouping, leak-free split, loaders
-  models.py         architectures, registry, checkpoint format
-  training.py       LP-FT training engine with EMA, early stopping, calibration
-  calibration.py    temperature scaling
-  metrics.py        accuracy, calibration and screening metrics
-  ensemble.py       reliability weights and uncertainty assessment
-  inference.py      inference service + Grad-CAM (used by server, CLI and Gradio)
-train.py · evaluate.py · compare.py · predict.py · server.py · app.py
-scripts/audit_dataset.py   dataset duplicate / leakage audit
-frontend/                  web UI (vanilla JS, vendored Chart.js and icons)
-tests/                     pytest suite
-notebooks/                 Colab training + analysis notebooks
+server.py          FastAPI app (Vercel entrypoint)        public/          static site (CDN)
+src/                                                         index.html
+  config.py        paths, class metadata, recipes            static/        app.js, style.css, vendor/
+  preprocessing.py head cropping (NumPy), image modes        samples/       sample scans + index.json
+  runtime.py       ONNX Runtime serving, image loading    models/
+  inference.py     inference service (ONNX or PyTorch)      *.pth          PyTorch checkpoints (training)
+  ensemble.py      reliability weights, uncertainty         onnx/          deployed models + manifest
+  onnx_export.py   ONNX export with in-graph Grad-CAM     scripts/
+  torch_backend.py PyTorch serving backend (local)          export_onnx.py, audit_dataset.py,
+  data.py, models.py, training.py, calibration.py,          build_sample_index.py
+  metrics.py, jsonutil.py                                 tests/, notebooks/
+train.py · evaluate.py · compare.py · predict.py · app.py (Gradio)
+pyproject.toml · requirements*.txt · vercel.json · .vercelignore · .python-version
 ```
 
-## 9. Limitations
+## 10. Limitations
 
 * Four classes only; "no tumor pattern" does not exclude other pathology.
 * Single 2-D slices; clinical reading uses full 3-D, multi-sequence studies.
