@@ -1,4 +1,8 @@
 """End-to-end smoke test of the training engine on synthetic data (CPU, ~seconds)."""
+import pytest
+
+pytest.importorskip("torch")  # PyTorch tests are skipped in the serving-only (Vercel) environment
+
 import dataclasses
 import json
 

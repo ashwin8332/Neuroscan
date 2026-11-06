@@ -18,7 +18,6 @@ What changed versus the original loop and why
 from __future__ import annotations
 
 import copy
-import json
 import logging
 import math
 import random
@@ -37,6 +36,7 @@ from tqdm import tqdm
 from .calibration import fit_temperature, nll
 from .config import RESULTS_DIR, SEED, TrainRecipe
 from .data import DataBundle
+from .jsonutil import write_json
 from .metrics import collect_logits, expected_calibration_error
 from .models import (
     MODEL_REGISTRY,
@@ -294,8 +294,7 @@ def train_model(
     })
     results_dir = Path(results_dir)
     results_dir.mkdir(parents=True, exist_ok=True)
-    with open(results_dir / f"{key}_history.json", "w") as f:
-        json.dump(history, f, indent=2)
+    write_json(results_dir / f"{key}_history.json", history)
 
     logger.info("Best epoch %d | val loss %.4f | T=%.3f | val ECE %.4f -> %.4f | saved %s",
                 best["epoch"], best["loss"], temperature, val_metrics["val_ece"],

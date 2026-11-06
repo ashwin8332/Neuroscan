@@ -2,7 +2,9 @@
 import io
 
 import pytest
-import torch
+
+pytest.importorskip("torch")  # PyTorch tests are skipped in the serving-only (Vercel) environment
+import torch  # noqa: E402
 from fastapi.testclient import TestClient
 from PIL import Image
 
@@ -17,7 +19,8 @@ from tests.conftest import make_scan
 @pytest.fixture(scope="module")
 def client(tmp_path_factory):
     root = tmp_path_factory.mktemp("app")
-    models_dir, samples_dir, results_dir = root / "models", root / "samples", root / "results"
+    models_dir, results_dir, public_dir = root / "models", root / "results", root / "public"
+    samples_dir = public_dir / "samples"
     torch.manual_seed(0)
     save_checkpoint(models_dir / "custom_cnn_final_model.pth", BrainTumorCNNv2().eval(), "custom_cnn",
                     "custom_cnn_v2", DEFAULT_PREPROCESS, temperature=1.3, val_metrics={"val_acc": 0.9})
@@ -25,8 +28,11 @@ def client(tmp_path_factory):
         (samples_dir / cls).mkdir(parents=True)
         make_scan(100 + i, i).save(samples_dir / cls / f"{cls}_1.jpg", quality=95)
     results_dir.mkdir()
-    settings = server.Settings(models_dir=models_dir, samples_dir=samples_dir, results_dir=results_dir, max_upload_mb=1)
-    service = InferenceService(models_dir=models_dir, device=torch.device("cpu"), benchmark_path=None).load()
+    (public_dir / "index.html").write_text("<!doctype html><title>NeuroScan</title>")
+    settings = server.Settings(models_dir=models_dir, public_dir=public_dir, results_dir=results_dir,
+                               max_upload_mb=1, serve_static=True)
+    service = InferenceService(models_dir=models_dir, device=torch.device("cpu"), benchmark_path=None,
+                               backend="torch").load()
     with TestClient(server.create_app(settings, service)) as test_client:
         yield test_client
 
@@ -38,7 +44,7 @@ def _png_bytes(img: Image.Image) -> bytes:
 
 
 def test_health_and_status_only_list_real_checkpoints(client):
-    assert client.get("/api/health").json() == {"status": "ok", "models_loaded": 1}
+    assert client.get("/api/health").json() == {"status": "ok", "backend": "torch", "models_loaded": 1}
     status = client.get("/api/status").json()
     rows = {m["key"]: m for m in status["models"]}
     assert rows["custom_cnn"]["is_trained"] and rows["custom_cnn"]["temperature"] == pytest.approx(1.3)

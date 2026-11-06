@@ -11,7 +11,6 @@ from __future__ import annotations
 
 import argparse
 import datetime as dt
-import json
 import logging
 import sys
 from pathlib import Path
@@ -25,6 +24,7 @@ import torch.nn.functional as F
 from src.config import BATCH_SIZE, CLASS_NAMES, MODELS_DIR, RESULTS_DIR, TEST_DIR, TRAIN_DIR, ensure_output_dirs, get_device
 from src.data import MRIDataset, compute_image_hashes, get_eval_tensorize, make_loader, near_duplicate_pairs, scan_image_folder
 from src.ensemble import reliability_weight
+from src.jsonutil import write_json
 from src.metrics import collect_logits, compute_comprehensive_metrics, measure_latency
 from src.models import MODEL_REGISTRY, count_parameters, load_model_from_checkpoint
 
@@ -164,10 +164,8 @@ def evaluate_all_models(
         "Total Parameters": m["parameters_total"],
     } for m in results.values()]
     pd.DataFrame(rows).to_csv(results_dir / "model_comparison_metrics.csv", index=False)
-    with open(results_dir / "model_comparison_metrics.json", "w") as f:
-        json.dump(results, f, indent=2)
-    with open(results_dir / "evaluation_meta.json", "w") as f:
-        json.dump(meta, f, indent=2)
+    write_json(results_dir / "model_comparison_metrics.json", results)
+    write_json(results_dir / "evaluation_meta.json", meta)
     logger.info("Saved %s, %s and %s", results_dir / "model_comparison_metrics.csv",
                 results_dir / "model_comparison_metrics.json", results_dir / "evaluation_meta.json")
     return results

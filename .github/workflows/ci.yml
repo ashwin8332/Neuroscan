@@ -14,8 +14,9 @@ concurrency:
 
 jobs:
   test:
+    name: Full suite (Python 3.11, PyTorch)
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 25
     steps:
       - uses: actions/checkout@v4
 
@@ -35,7 +36,59 @@ jobs:
         run: python -m compileall -q src scripts tests train.py evaluate.py predict.py compare.py server.py
 
       - name: Check frontend script
-        run: node --check frontend/app.js
+        run: node --check public/static/app.js
+
+      - name: ONNX exports match the checkpoints
+        run: python scripts/export_onnx.py --check
+
+      - name: Sample index is current
+        run: python scripts/build_sample_index.py --check
+
+      - name: Tests
+        run: pytest
+
+  vercel-runtime:
+    name: Vercel runtime (serving dependencies only)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version-file: .python-version
+
+      - name: Install exactly what Vercel installs (+ test tools)
+        run: pip install -r requirements.txt pytest httpx
+
+      - name: PyTorch, SciPy and scikit-learn must not be needed
+        run: |
+          python - <<'EOF'
+          import importlib.util, sys
+          present = [m for m in ("torch", "scipy", "sklearn") if importlib.util.find_spec(m)]
+          sys.exit(f"unexpected heavy packages installed: {present}" if present else 0)
+          EOF
+
+      - name: Tests (with bundle-size budget)
+        env:
+          NEUROSCAN_CHECK_BUNDLE: "1"
+        run: pytest
+
+  minimum-versions:
+    name: Oldest supported dependencies (Python 3.11)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install the lower bounds of requirements.txt
+        run: >
+          pip install "fastapi==0.110.*" "python-multipart==0.0.9" "numpy==1.26.*"
+          "pillow==10.3.*" "onnxruntime==1.18.*" "uvicorn==0.29.*" "pytest>=8" "httpx<0.28"
 
       - name: Tests
         run: pytest

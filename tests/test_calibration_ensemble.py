@@ -1,6 +1,8 @@
 import numpy as np
 import pytest
-import torch
+
+pytest.importorskip("torch")  # PyTorch tests are skipped in the serving-only (Vercel) environment
+import torch  # noqa: E402
 
 from src.calibration import fit_temperature, nll
 from src.ensemble import assess_uncertainty, reliability_weight, weighted_average

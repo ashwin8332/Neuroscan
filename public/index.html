@@ -70,7 +70,7 @@
           <div class="panel reveal">
             <h2 class="eyebrow"><span class="step">01</span> Scan input</h2>
             <div class="dropzone" id="dropzone" role="button" tabindex="0" aria-describedby="dropzone-hint">
-              <input type="file" id="file-input" accept="image/jpeg,image/png" hidden>
+              <input type="file" id="file-input" accept="image/jpeg,image/png,image/webp,image/bmp,.jpg,.jpeg,.png,.webp,.bmp" hidden>
               <div class="dropzone__empty" id="dropzone-empty">
                 <i class="fa-solid fa-file-image dropzone__icon" aria-hidden="true"></i>
                 <span class="dropzone__title">Drop an MRI slice here</span>
@@ -81,7 +81,7 @@
                 <figcaption id="preview-name" class="mono"></figcaption>
               </figure>
             </div>
-            <p class="hint" id="dropzone-hint">JPEG or PNG export of a single axial, coronal or sagittal slice · max <span id="max-upload">10</span>&nbsp;MB. DICOM files are not supported.</p>
+            <p class="hint" id="dropzone-hint">JPEG, PNG, WebP or BMP export of a single axial, coronal or sagittal slice · max <span id="max-upload">10</span>&nbsp;MB. DICOM files are not supported.</p>
             <div class="actions">
               <button class="btn btn--primary" id="analyze-btn" type="button" disabled>
                 <i class="fa-solid fa-wave-square" aria-hidden="true"></i><span>Analyze scan</span>

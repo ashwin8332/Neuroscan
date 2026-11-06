@@ -21,9 +21,12 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
 from PIL import Image
-from scipy import ndimage
 
 BBox = Tuple[int, int, int, int]
+
+# 16/32-bit and float modes common in medical exports. Pillow's convert("RGB")
+# clips them to 0-255, which turns a 12/16-bit MRI slice almost completely white.
+HIGH_BIT_MODES = {"I;16", "I;16B", "I;16L", "I;16N", "I", "F"}
 
 
 @dataclass(frozen=True)
@@ -46,6 +49,111 @@ class PreprocessConfig:
 
 LEGACY_PREPROCESS = PreprocessConfig(image_size=224, crop_brain=False, pad_to_square=False)
 DEFAULT_PREPROCESS = PreprocessConfig()
+
+
+def to_rgb(img: Image.Image) -> Image.Image:
+    """Convert any Pillow mode to 8-bit RGB without destroying the image.
+
+    * 16/32-bit and float images are min-max scaled to 0-255 instead of clipped;
+    * transparent images (RGBA, LA, PA, palette with transparency) are
+      composited onto black, the background colour of an MRI slice;
+    * everything else (L, RGB, P, CMYK, YCbCr, ...) uses Pillow's conversion,
+      which keeps 8-bit inputs bit-identical to the training pipeline.
+    """
+    if img.mode in HIGH_BIT_MODES:
+        arr = np.asarray(img, dtype=np.float64)
+        finite = np.isfinite(arr)
+        lo = float(arr[finite].min()) if finite.any() else 0.0
+        hi = float(arr[finite].max()) if finite.any() else 0.0
+        scaled = np.zeros_like(arr) if hi <= lo else (np.where(finite, arr, lo) - lo) * (255.0 / (hi - lo))
+        img = Image.fromarray(np.clip(np.rint(scaled), 0, 255).astype(np.uint8))
+    if img.mode in ("RGBA", "LA", "PA", "RGBa", "La") or (img.mode == "P" and "transparency" in img.info):
+        rgba = img.convert("RGBA")
+        img = Image.alpha_composite(Image.new("RGBA", rgba.size, (0, 0, 0, 255)), rgba)
+    return img if img.mode == "RGB" else img.convert("RGB")
+
+
+# --------------------------------------------------------------------------- #
+# NumPy re-implementations of the three scipy.ndimage operations used to find
+# the head. They reproduce scipy's results exactly (see tests/test_preprocessing)
+# so the serving bundle does not need SciPy (~110 MB) on Vercel.
+# --------------------------------------------------------------------------- #
+def gaussian_blur(arr: np.ndarray, sigma: float, truncate: float = 4.0) -> np.ndarray:
+    """== scipy.ndimage.gaussian_filter(arr.astype(float32), sigma) (mode='reflect')."""
+    radius = int(truncate * float(sigma) + 0.5)
+    taps = np.arange(-radius, radius + 1, dtype=np.float64)
+    kernel = np.exp(-0.5 / (float(sigma) ** 2) * taps ** 2)
+    kernel /= kernel.sum()
+    out = np.asarray(arr, dtype=np.float32)
+    for axis in (0, 1):
+        width = [(0, 0), (0, 0)]
+        width[axis] = (radius, radius)
+        padded = np.pad(out.astype(np.float64), width, mode="symmetric")
+        acc = np.zeros(out.shape, dtype=np.float64)
+        length = out.shape[axis]
+        for i, weight in enumerate(kernel):
+            window = [slice(None), slice(None)]
+            window[axis] = slice(i, i + length)
+            acc += weight * padded[tuple(window)]
+        out = acc.astype(np.float32)  # scipy stores each 1-D pass in the input dtype
+    return out
+
+
+def _neighbourhood(mask: np.ndarray, reduce) -> np.ndarray:
+    """3x3 neighbourhood AND/OR with pixels outside the image treated as False."""
+    height, width = mask.shape
+    padded = np.pad(mask, 1, mode="constant", constant_values=False)
+    out = padded[1:height + 1, 1:width + 1].copy()
+    for dy in range(3):
+        for dx in range(3):
+            if dy != 1 or dx != 1:
+                reduce(out, padded[dy:dy + height, dx:dx + width], out=out)
+    return out
+
+
+def binary_opening(mask: np.ndarray, iterations: int = 2) -> np.ndarray:
+    """== scipy.ndimage.binary_opening(mask, structure=ones((3, 3)), iterations=iterations)."""
+    out = np.asarray(mask, dtype=bool)
+    for _ in range(iterations):
+        out = _neighbourhood(out, np.logical_and)
+    for _ in range(iterations):
+        out = _neighbourhood(out, np.logical_or)
+    return out
+
+
+def largest_component(mask: np.ndarray) -> Tuple[np.ndarray, int]:
+    """Largest 4-connected component (scipy.ndimage.label's default connectivity).
+
+    Union-find with min-index hooking and pointer jumping; ties go to the
+    component that starts first in raster order, exactly like
+    ``np.argmax(np.bincount(scipy.ndimage.label(mask)[0])[1:])``.
+    """
+    mask = np.asarray(mask, dtype=bool)
+    if not mask.any():
+        return np.zeros_like(mask), 0
+    height, width = mask.shape
+    index = np.arange(height * width, dtype=np.int64).reshape(height, width)
+    horizontal = mask[:, :-1] & mask[:, 1:]
+    vertical = mask[:-1, :] & mask[1:, :]
+    a = np.concatenate([index[:, :-1][horizontal], index[:-1, :][vertical]])
+    b = np.concatenate([index[:, 1:][horizontal], index[1:, :][vertical]])
+    parent = index.ravel().copy()
+    while a.size:
+        root_a, root_b = parent[a], parent[b]
+        differ = root_a != root_b
+        if not differ.any():
+            break
+        np.minimum.at(parent, np.maximum(root_a[differ], root_b[differ]), np.minimum(root_a[differ], root_b[differ]))
+        while True:  # pointer jumping until every node points at its root
+            grand = parent[parent]
+            if np.array_equal(grand, parent):
+                break
+            parent = grand
+    roots = parent[index.ravel()[mask.ravel()]]
+    counts = np.bincount(roots, minlength=height * width)
+    best = int(np.argmax(counts))  # first maximum = lowest root = first in raster order
+    component = (parent.reshape(height, width) == best) & mask
+    return component, int(counts[best])
 
 
 def _otsu_threshold(gray: np.ndarray) -> float:
@@ -77,7 +185,7 @@ def find_brain_bbox(
     ``None`` when no plausible head region is found (the caller then keeps the
     full image, so preprocessing never fails).
     """
-    gray_img = img.convert("L")
+    gray_img = to_rgb(img).convert("L")
     width, height = gray_img.size
     if width < 8 or height < 8:
         return None
@@ -88,19 +196,14 @@ def find_brain_bbox(
         )
     gray = np.asarray(gray_img, dtype=np.uint8)
 
-    smooth = ndimage.gaussian_filter(gray.astype(np.float32), sigma=1.5)
+    smooth = gaussian_blur(gray, sigma=1.5)
     threshold = float(np.clip(0.5 * _otsu_threshold(gray), 12.0, 60.0))
-    mask = ndimage.binary_opening(smooth > threshold, structure=np.ones((3, 3)), iterations=2)
+    mask = binary_opening(smooth > threshold, iterations=2)
 
-    labels, num = ndimage.label(mask)
-    if num == 0:
-        return None
-    sizes = np.bincount(labels.ravel())[1:]
-    largest = int(np.argmax(sizes)) + 1
-    if sizes[largest - 1] < min_area_frac * mask.size:
+    component, size = largest_component(mask)
+    if size == 0 or size < min_area_frac * mask.size:
         return None
 
-    component = labels == largest
     rows = np.flatnonzero(component.any(axis=1))
     cols = np.flatnonzero(component.any(axis=0))
     inv = 1.0 / scale
@@ -144,7 +247,7 @@ def preprocess_image(
 ) -> Image.Image:
     """Apply the deterministic part of the pipeline and return an RGB PIL image."""
     size = output_size or cfg.image_size
-    img = img.convert("RGB")
+    img = to_rgb(img)
     if cfg.crop_brain:
         img = crop_to_brain(img)
     if cfg.pad_to_square:
@@ -179,7 +282,7 @@ def assess_image_quality(img: Image.Image) -> Dict[str, Any]:
     """
     warnings: List[str] = []
     width, height = img.size
-    rgb = np.asarray(img.convert("RGB").resize((128, 128), Image.BILINEAR), dtype=np.float32)
+    rgb = np.asarray(to_rgb(img).resize((128, 128), Image.BILINEAR), dtype=np.float32)
     r, g, b = rgb[..., 0], rgb[..., 1], rgb[..., 2]
     colourfulness = float((np.abs(r - g) + np.abs(g - b) + np.abs(r - b)).mean() / 3.0)
     gray = rgb.mean(axis=2)

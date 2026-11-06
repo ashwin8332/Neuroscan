@@ -1,0 +1,12 @@
+# Training, evaluation, ONNX export and figures (not deployed).
+-r requirements.txt
+# torch>=2.6 fixes CVE-2025-32434 (code execution via torch.load).
+torch>=2.6,<3
+torchvision>=0.21,<1
+scipy>=1.11
+scikit-learn>=1.4
+pandas>=2.1
+tqdm>=4.66
+matplotlib>=3.8
+seaborn>=0.13
+onnx>=1.16,<2

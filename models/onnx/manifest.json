@@ -1,0 +1,103 @@
+{
+  "manifest_version": 1,
+  "exported_at": "2026-11-06T11:39:42+00:00",
+  "torch_version": "2.15.0+cu132",
+  "opset": 18,
+  "class_names": [
+    "glioma",
+    "meningioma",
+    "notumor",
+    "pituitary"
+  ],
+  "models": {
+    "custom_cnn": {
+      "file": "custom_cnn.onnx",
+      "sha256": "8ad757d635ef014d852f62977b68b4b67967b78d160565e5db8792f6ab028c80",
+      "source_checkpoint": "custom_cnn_final_model.pth",
+      "source_sha256": "3eca41a2832a634a5d35f38a22ac1da31f22a63685b94580717a7645ad4629ae",
+      "arch": "custom_cnn_v1",
+      "display_name": "Custom CNN",
+      "description": "Residual CNN with squeeze-excitation, trained from scratch",
+      "temperature": 1.0,
+      "preprocess": {
+        "image_size": 224,
+        "crop_brain": false,
+        "pad_to_square": false
+      },
+      "val_metrics": {
+        "val_acc": 0.8943577430972389,
+        "val_loss": 0.31901356910600237
+      },
+      "checkpoint_format": 1,
+      "supports_gradcam": false,
+      "parameters_total": 1439748,
+      "outputs": [
+        "logits"
+      ],
+      "verification": {
+        "max_abs_logit_diff": 1.6689300537109375e-06
+      }
+    },
+    "resnet18": {
+      "file": "resnet18.onnx",
+      "sha256": "2e98d90a2756b4538f0d37e69001d909da05a0a9526a159e8ce0c69a3f480b3f",
+      "source_checkpoint": "resnet18_final_model.pth",
+      "source_sha256": "4fd2200a914a62cf3e369420329e748b819f88bc4594cdcd38d42eea3a2ee256",
+      "arch": "resnet18",
+      "display_name": "ResNet-18 (Transfer Learning)",
+      "description": "Deep residual network fine-tuned from ImageNet",
+      "temperature": 1.0,
+      "preprocess": {
+        "image_size": 224,
+        "crop_brain": false,
+        "pad_to_square": false
+      },
+      "val_metrics": {
+        "val_acc": 0.986904761904762
+      },
+      "checkpoint_format": 1,
+      "supports_gradcam": true,
+      "parameters_total": 11308868,
+      "outputs": [
+        "logits",
+        "cams"
+      ],
+      "verification": {
+        "max_abs_logit_diff": 8.344650268554688e-07,
+        "max_abs_cam_diff": 1.1920928955078125e-06
+      }
+    },
+    "mobilenet_v3": {
+      "file": "mobilenet_v3.onnx",
+      "sha256": "8cb54faf5947db0613b9ad69fc9a7a0f3a38e19512c6c896724b1e776dd58213",
+      "source_checkpoint": "mobilenet_v3_final_model.pth",
+      "source_sha256": "55e371e07f52b2ae2c4f6ed4a8863b3792add681bae9727d797630bddcc037e1",
+      "arch": "mobilenet_v3",
+      "display_name": "MobileNetV3 (Efficient CNN)",
+      "description": "Hardware-efficient CNN with squeeze-excitation and hard-swish",
+      "temperature": 1.0,
+      "preprocess": {
+        "image_size": 224,
+        "crop_brain": false,
+        "pad_to_square": false
+      },
+      "val_metrics": {
+        "val_acc": 0.9726190476190476
+      },
+      "checkpoint_format": 1,
+      "supports_gradcam": true,
+      "parameters_total": 1075748,
+      "outputs": [
+        "logits",
+        "cams"
+      ],
+      "verification": {
+        "max_abs_logit_diff": 1.0013580322265625e-05,
+        "max_abs_cam_diff": 1.7583370208740234e-06
+      }
+    }
+  },
+  "excluded": {
+    "vit": "excluded from the web deployment: its ~330 MB ONNX file exceeds GitHub's 100 MB file limit and the serverless bundle budget (use --include-vit when self-hosting)"
+  }
+}

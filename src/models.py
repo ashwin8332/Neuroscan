@@ -18,7 +18,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 from torchvision import models
 
-from .config import CLASS_NAMES
+from .config import CLASS_NAMES, MODEL_SPECS
 from .preprocessing import LEGACY_PREPROCESS, PreprocessConfig
 
 CHECKPOINT_FORMAT_VERSION = 2
@@ -240,32 +240,7 @@ HEAD_PREFIXES = {
     "custom_cnn": (),  # trained from scratch: every parameter is "head"
 }
 
-MODEL_REGISTRY: Dict[str, Dict[str, Any]] = {
-    "custom_cnn": {
-        "display_name": "Custom CNN",
-        "description": "Residual CNN with squeeze-excitation, trained from scratch",
-        "checkpoint": "custom_cnn_final_model.pth",
-        "pretrained": False,
-    },
-    "resnet18": {
-        "display_name": "ResNet-18 (Transfer Learning)",
-        "description": "Deep residual network fine-tuned from ImageNet",
-        "checkpoint": "resnet18_final_model.pth",
-        "pretrained": True,
-    },
-    "mobilenet_v3": {
-        "display_name": "MobileNetV3 (Efficient CNN)",
-        "description": "Hardware-efficient CNN with squeeze-excitation and hard-swish",
-        "checkpoint": "mobilenet_v3_final_model.pth",
-        "pretrained": True,
-    },
-    "vit": {
-        "display_name": "Vision Transformer (ViT-B/16)",
-        "description": "Transformer with multi-head self-attention over 16x16 patches",
-        "checkpoint": "best_vit_model.pth",
-        "pretrained": True,
-    },
-}
+MODEL_REGISTRY: Dict[str, Dict[str, Any]] = MODEL_SPECS
 
 
 def normalize_model_name(model_name: str) -> str:

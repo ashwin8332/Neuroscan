@@ -1,5 +1,7 @@
 import pytest
-import torch
+
+pytest.importorskip("torch")  # PyTorch tests are skipped in the serving-only (Vercel) environment
+import torch  # noqa: E402
 
 from src.config import CLASS_NAMES, MODELS_DIR
 from src.models import (
