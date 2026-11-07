@@ -1,11 +1,9 @@
-# NeuroScan AI · Brain MRI Tumor Classification & Model Comparison
+# NeuroScan AI: Brain MRI Tumor Classification & Model Comparison
 
-A research workbench that trains, evaluates and compares four deep-learning models for
-classifying brain MRI slices into **glioma, meningioma, pituitary tumor or no tumor**,
-and serves them through a web app with calibrated confidence and Grad-CAM explanations.
+A research workbench that trains, evaluates, and compares four deep-learning models for classifying brain MRI slices into **glioma, meningioma, pituitary tumor, or no tumor**, and serves them through a web app with calibrated confidence and Grad-CAM explanations.
 
 > **Research and education only.** NeuroScan AI is not a medical device, has not been
-> clinically validated and must not be used to diagnose, treat or rule out any condition.
+> clinically validated and must not be used to diagnose, treat, or rule out any condition.
 
 | Model | Type | Parameters |
 |---|---|---|
